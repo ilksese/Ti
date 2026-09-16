@@ -61,6 +61,13 @@ data class ModelEntity(
     val topP: Double? = null,
     val maxTokens: Int? = null,
     val discovered: Boolean = true,
+    val reasoningMode: Boolean? = null,
+    val reasoningLevels: String? = null,
+    val maxInputTokens: Int? = null,
+    val inputPrice: Double? = null,
+    val outputPrice: Double? = null,
+    val inputModalities: String? = null,
+    val outputModalities: String? = null,
 )
 
 @Entity(
@@ -153,6 +160,9 @@ interface TiDao {
 
     @Query("SELECT * FROM providers ORDER BY name COLLATE NOCASE")
     fun observeProviders(): Flow<List<ProviderEntity>>
+
+    @Query("SELECT * FROM providers ORDER BY name COLLATE NOCASE")
+    suspend fun providers(): List<ProviderEntity>
 
     @Query("SELECT * FROM providers WHERE id = :id")
     fun observeProvider(id: String): Flow<ProviderEntity?>
@@ -256,7 +266,7 @@ interface TiDao {
         MessageEntity::class,
         SettingEntity::class,
     ],
-    version = 2,
+    version = 4,
     exportSchema = false,
 )
 abstract class TiDatabase : RoomDatabase() {
@@ -270,9 +280,26 @@ abstract class TiDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE models ADD COLUMN reasoningMode INTEGER")
+                db.execSQL("ALTER TABLE models ADD COLUMN reasoningLevels TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN maxInputTokens INTEGER")
+                db.execSQL("ALTER TABLE models ADD COLUMN inputPrice REAL")
+                db.execSQL("ALTER TABLE models ADD COLUMN outputPrice REAL")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE models ADD COLUMN inputModalities TEXT")
+                db.execSQL("ALTER TABLE models ADD COLUMN outputModalities TEXT")
+            }
+        }
+
         fun create(context: Context): TiDatabase =
             Room.databaseBuilder(context, TiDatabase::class.java, "ti.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }

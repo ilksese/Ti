@@ -3,12 +3,17 @@ package app.ti
 import android.content.Context
 import app.ti.agent.AgentRunManager
 import app.ti.agent.RepoFiles
+import app.ti.data.ModelEntity
 import app.ti.data.RepositoryEntity
+import app.ti.data.SettingEntity
 import app.ti.data.TiDatabase
 import app.ti.git.GitService
 import app.ti.git.gitProxy
 import app.ti.git.gitProxyUrl
+import app.ti.llm.ModelInfo
+import app.ti.llm.ModelsDevClient
 import app.ti.llm.OpenAiClient
+import app.ti.llm.matchModelInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -31,6 +36,7 @@ class AppContainer(context: Context) {
     val git = GitService()
     val llm = OpenAiClient()
     val files = RepoFiles()
+    private val modelsDev = ModelsDevClient(File(context.filesDir, "models-dev-cache.json"))
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val cloneJobs = ConcurrentHashMap<String, Job>()
     val agents = AgentRunManager(dao, llm, files, git, scope)
@@ -40,6 +46,9 @@ class AppContainer(context: Context) {
             dao.interruptActiveSessions()
             dao.interruptPendingTools()
             dao.interruptCloningRepositories()
+        }
+        scope.launch {
+            if (dao.setting(MODEL_AUTO_COMPLETE)?.value == "true") modelsDev.refreshIfStale()
         }
     }
 
@@ -89,4 +98,40 @@ class AppContainer(context: Context) {
             withContext(Dispatchers.IO) { File(repo.localPath).deleteRecursively() }
         }
     }
+
+    suspend fun enrichProvider(providerId: String) {
+        if (dao.setting(MODEL_AUTO_COMPLETE)?.value != "true") return
+        scope.launch { modelsDev.refreshIfStale() }
+        val catalog = modelsDev.cached()?.second ?: return
+        enrich(providerId, catalog)
+    }
+
+    suspend fun enableModelAutoComplete(): Boolean {
+        if (!modelsDev.refresh()) return false
+        dao.saveSetting(SettingEntity(MODEL_AUTO_COMPLETE, "true"))
+        modelsDev.cached()?.second?.let { catalog ->
+            dao.providers().forEach { enrich(it.id, catalog) }
+        }
+        return true
+    }
+
+    private suspend fun enrich(providerId: String, catalog: Map<String, ModelInfo>) {
+        dao.models(providerId).forEach { model ->
+            val info = matchModelInfo(catalog, model.modelId) ?: return@forEach
+            dao.saveModel(
+                model.copy(
+                    contextTokens = info.contextTokens ?: model.contextTokens,
+                    reasoningMode = info.reasoningMode,
+                    reasoningLevels = info.reasoningLevels?.joinToString(","),
+                    maxInputTokens = info.maxInputTokens,
+                    inputPrice = info.inputPrice,
+                    outputPrice = info.outputPrice,
+                    inputModalities = info.inputModalities?.joinToString(","),
+                    outputModalities = info.outputModalities?.joinToString(","),
+                ),
+            )
+        }
+    }
 }
+
+private const val MODEL_AUTO_COMPLETE = "ai_model_autocomplete"
