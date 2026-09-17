@@ -81,7 +81,7 @@ class AgentRunManager(
 
     private suspend fun runAgent(sessionId: String, input: String) {
         var session = requireNotNull(dao.session(sessionId)) { "Session not found" }
-        val repo = requireNotNull(dao.repository(session.repositoryId)) { "Repository not found" }
+        val repo = session.repositoryId?.let { dao.repository(it) }
         val model = requireNotNull(dao.model(session.modelId)) { "Model not found" }
         val provider = requireNotNull(dao.provider(model.providerId)) { "Provider not found" }
         dao.saveMessage(message(sessionId, "user", input))
@@ -114,7 +114,7 @@ class AgentRunManager(
                     messages = dao.messages(sessionId),
                     systemPrompt = systemPrompt(repo),
                     summary = session.summary,
-                    tools = TOOLS,
+                    tools = if (repo == null) NO_TOOLS else TOOLS,
                     onReasoning = {
                         if (partial.isBlank()) setState(sessionId, AgentRunState(running = true, retryText = "Thinking..."))
                     },
@@ -163,7 +163,7 @@ class AgentRunManager(
         }
     }
 
-    private suspend fun runTool(sessionId: String, repo: RepositoryEntity, call: ToolCall) {
+    private suspend fun runTool(sessionId: String, repo: RepositoryEntity?, call: ToolCall) {
         val toolMessage = message(
             sessionId = sessionId,
             role = "tool",
@@ -184,7 +184,10 @@ class AgentRunManager(
                 return
             }
         }
-        val result = runCatching { executeTool(repo, call) }
+        val result = runCatching {
+            requireNotNull(repo) { "This chat is not attached to a repository" }
+            executeTool(repo, call)
+        }
         dao.finishTool(
             toolMessage.id,
             result.getOrElse { "Error: ${it.message ?: it::class.simpleName}" }.take(200_000),
@@ -321,7 +324,10 @@ class AgentRunManager(
         }
     }.toString()
 
-    private fun systemPrompt(repo: RepositoryEntity) = """
+    private fun systemPrompt(repo: RepositoryEntity?) = if (repo == null) """
+        You are Ti, a helpful coding assistant. This conversation is standalone and has no repository,
+        so you have no tools and cannot read, write, or run anything. Answer from the conversation only.
+    """.trimIndent() else """
         You are Ti, a code agent working in the repository ${repo.name}.
         Inspect relevant files before editing. Use tools instead of inventing file contents.
         Keep changes minimal and scoped to the user's request. You cannot run shell commands, builds, or tests.

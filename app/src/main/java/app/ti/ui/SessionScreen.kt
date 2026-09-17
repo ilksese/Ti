@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -60,6 +61,8 @@ import kotlinx.coroutines.launch
 internal fun SessionScreen(container: AppContainer, nav: NavController, sessionId: String) {
     val session by container.dao.observeSession(sessionId).collectAsStateWithLifecycle(null)
     val messages by container.dao.observeMessages(sessionId).collectAsStateWithLifecycle(emptyList())
+    val models by container.dao.observeModels().collectAsStateWithLifecycle(emptyList())
+    val providers by container.dao.observeProviders().collectAsStateWithLifecycle(emptyList())
     val states by container.agents.states.collectAsStateWithLifecycle()
     val state = states[sessionId]
     val visibleMessages = messages.filterNot { it.role == "assistant" && it.content.isBlank() }
@@ -67,6 +70,7 @@ internal fun SessionScreen(container: AppContainer, nav: NavController, sessionI
     val listState = rememberLazyListState()
     var input by remember { mutableStateOf("") }
     var rename by remember { mutableStateOf(false) }
+    var showModel by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     LaunchedEffect(visibleMessages.size, state?.partial) {
         val extra = if (state?.partial?.isNotBlank() == true) 1 else 0
@@ -76,9 +80,20 @@ internal fun SessionScreen(container: AppContainer, nav: NavController, sessionI
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(session?.title ?: "Session", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Column {
+                        Text(session?.title ?: "Session", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val current = models.firstOrNull { it.id == session?.modelId }?.modelId
+                        if (current != null) {
+                            Text(current, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 actions = {
+                    IconButton(onClick = { showModel = true }, enabled = session != null && state?.running != true) {
+                        Icon(Icons.Default.SwapHoriz, "Switch model")
+                    }
                     IconButton(onClick = { rename = true }) { Icon(Icons.Default.Edit, "Rename") }
                     IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete") }
                 },
@@ -118,6 +133,12 @@ internal fun SessionScreen(container: AppContainer, nav: NavController, sessionI
                 item { Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text(state.retryText ?: "Working...") } }
             }
             state?.error?.let { item { ErrorText(it) } }
+        }
+    }
+    if (showModel) ModelPickerDialog(models, providers, onDismiss = { showModel = false }) { model ->
+        showModel = false
+        session?.let { value ->
+            scope.launch { container.dao.saveSession(value.copy(modelId = model.id, updatedAt = System.currentTimeMillis())) }
         }
     }
     if (rename) TextEntryDialog("Rename session", "Title", session?.title.orEmpty(), onDismiss = { rename = false }) { title ->

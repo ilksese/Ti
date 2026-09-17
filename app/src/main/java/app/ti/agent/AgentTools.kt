@@ -16,6 +16,8 @@ internal val MUTATING_GIT_TOOLS = setOf(
     "git_delete_branch",
 )
 
+internal val NO_TOOLS: JsonArray = buildJsonArray {}
+
 internal val TOOLS: JsonArray = buildJsonArray {
     add(tool("list_directory", "List up to 200 direct children of a directory", properties(
         "path" to stringProperty("Relative directory path; use empty string for root"),

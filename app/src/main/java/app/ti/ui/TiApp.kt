@@ -1,6 +1,10 @@
 package app.ti.ui
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
@@ -29,6 +33,7 @@ fun TiApp(container: AppContainer) {
         val entry by nav.currentBackStackEntryAsState()
         val route = entry?.destination?.route
         val roots = listOf(
+            Root("chat", "Chat", Icons.Default.Chat),
             Root("repos", "Repositories", Icons.Default.Folder),
             Root("providers", "Providers", Icons.Default.Cloud),
             Root("settings", "Settings", Icons.Default.Settings),
@@ -55,7 +60,17 @@ fun TiApp(container: AppContainer) {
                 }
             },
         ) { padding ->
-            NavHost(nav, startDestination = "repos", modifier = Modifier.padding(padding)) {
+            val fade = tween<Float>(durationMillis = 120)
+            NavHost(
+                nav,
+                startDestination = "repos",
+                modifier = Modifier.padding(padding),
+                enterTransition = { fadeIn(fade) },
+                exitTransition = { fadeOut(fade) },
+                popEnterTransition = { fadeIn(fade) },
+                popExitTransition = { fadeOut(fade) },
+            ) {
+                composable("chat") { ChatScreen(container, nav) }
                 composable("repos") { RepositoriesScreen(container, nav) }
                 composable("repo/{id}") { backStack ->
                     RepositoryScreen(container, nav, checkNotNull(backStack.arguments?.getString("id")))

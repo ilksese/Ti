@@ -90,7 +90,7 @@ data class ModelEntity(
 )
 data class SessionEntity(
     @PrimaryKey val id: String,
-    val repositoryId: String,
+    val repositoryId: String?,
     val modelId: String,
     val title: String = "New session",
     val titleGenerated: Boolean = false,
@@ -200,6 +200,15 @@ interface TiDao {
     @Query("SELECT * FROM sessions WHERE repositoryId = :repositoryId ORDER BY updatedAt DESC")
     fun observeSessions(repositoryId: String): Flow<List<SessionEntity>>
 
+    @Query("SELECT * FROM sessions WHERE repositoryId IS NULL ORDER BY updatedAt DESC")
+    fun observeChatSessions(): Flow<List<SessionEntity>>
+
+    @Query(
+        "SELECT models.* FROM models INNER JOIN providers ON providers.id = models.providerId " +
+            "ORDER BY providers.name COLLATE NOCASE, models.modelId COLLATE NOCASE LIMIT 1",
+    )
+    suspend fun defaultModel(): ModelEntity?
+
     @Query("SELECT * FROM sessions WHERE id = :id")
     fun observeSession(id: String): Flow<SessionEntity?>
 
@@ -266,21 +275,21 @@ interface TiDao {
         MessageEntity::class,
         SettingEntity::class,
     ],
-    version = 4,
+version = 5,
     exportSchema = false,
 )
 abstract class TiDatabase : RoomDatabase() {
     abstract fun dao(): TiDao
 
     companion object {
-        private val MIGRATION_1_2 = object : Migration(1, 2) {
+        internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE repositories ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'")
                 db.execSQL("ALTER TABLE repositories ADD COLUMN progress TEXT NOT NULL DEFAULT ''")
             }
         }
 
-        private val MIGRATION_2_3 = object : Migration(2, 3) {
+        internal val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE models ADD COLUMN reasoningMode INTEGER")
                 db.execSQL("ALTER TABLE models ADD COLUMN reasoningLevels TEXT")
@@ -290,16 +299,40 @@ abstract class TiDatabase : RoomDatabase() {
             }
         }
 
-        private val MIGRATION_3_4 = object : Migration(3, 4) {
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE models ADD COLUMN inputModalities TEXT")
                 db.execSQL("ALTER TABLE models ADD COLUMN outputModalities TEXT")
             }
         }
 
+internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sessions_new` (`id` TEXT NOT NULL, `repositoryId` TEXT, " +
+                        "`modelId` TEXT NOT NULL, `title` TEXT NOT NULL, `titleGenerated` INTEGER NOT NULL, " +
+                        "`status` TEXT NOT NULL, `summary` TEXT, `summaryThroughAt` INTEGER, `createdAt` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
+                        "FOREIGN KEY(`repositoryId`) REFERENCES `repositories`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, " +
+                        "FOREIGN KEY(`modelId`) REFERENCES `models`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                )
+                db.execSQL(
+                    "INSERT INTO `sessions_new` (`id`, `repositoryId`, `modelId`, `title`, `titleGenerated`, " +
+                        "`status`, `summary`, `summaryThroughAt`, `createdAt`, `updatedAt`) " +
+                        "SELECT `id`, `repositoryId`, `modelId`, `title`, `titleGenerated`, `status`, `summary`, " +
+                        "`summaryThroughAt`, `createdAt`, `updatedAt` FROM `sessions`",
+                )
+                db.execSQL("DROP TABLE `sessions`")
+                db.execSQL("ALTER TABLE `sessions_new` RENAME TO `sessions`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_repositoryId` ON `sessions` (`repositoryId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_modelId` ON `sessions` (`modelId`)")
+            }
+        }
+
         fun create(context: Context): TiDatabase =
             Room.databaseBuilder(context, TiDatabase::class.java, "ti.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }
+

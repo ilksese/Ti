@@ -12,6 +12,8 @@ import org.eclipse.jgit.lib.ProgressMonitor
 import org.eclipse.jgit.transport.RefSpec
 import org.eclipse.jgit.transport.RemoteRefUpdate
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
+import org.eclipse.jgit.treewalk.CanonicalTreeParser
+import org.eclipse.jgit.treewalk.FileTreeIterator
 import org.eclipse.jgit.treewalk.filter.PathFilter
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -60,24 +62,13 @@ class GitService {
         val formatter = DiffFormatter(output).apply { setRepository(git.repository) }
         try {
             val filter = path?.takeIf { it.isNotBlank() }?.let(PathFilter::create)
-            val head = git.repository.resolve("HEAD^{tree}")
             val reader = git.repository.newObjectReader()
             reader.use {
-                val oldTree = org.eclipse.jgit.treewalk.CanonicalTreeParser().apply {
-                    if (head != null) reset(reader, head)
-                }
-                val newTree = org.eclipse.jgit.dircache.DirCacheIterator(git.repository.readDirCache())
-                formatter.scan(oldTree, newTree)
+                val head = git.repository.resolve("HEAD^{tree}")
+                val oldTree = CanonicalTreeParser().apply { if (head != null) reset(it, head) }
+                formatter.scan(oldTree, FileTreeIterator(git.repository))
                     .filter { filter == null || it.newPath == path || it.oldPath == path }
                     .forEach(formatter::format)
-                git.diff().setCached(false).apply { if (filter != null) setPathFilter(filter) }.call().forEach(formatter::format)
-            }
-            val untracked = git.status().call().untracked.filter { path == null || it == path }
-            untracked.forEach { name ->
-                val file = File(repo.localPath, name)
-                val text = runCatching { file.readText().take(200_000) }.getOrElse { "[binary or unreadable]" }
-                output.write("diff --git a/$name b/$name\n--- /dev/null\n+++ b/$name\n".toByteArray())
-                text.lineSequence().forEach { output.write("+$it\n".toByteArray()) }
             }
             output.toString(Charsets.UTF_8.name()).ifBlank { "No diff" }
         } finally {

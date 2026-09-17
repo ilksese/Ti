@@ -21,8 +21,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -228,19 +230,39 @@ private fun BranchDialog(container: AppContainer, repo: RepositoryEntity, onDism
 }
 
 @Composable
-private fun ModelPickerDialog(models: List<ModelEntity>, providers: List<ProviderEntity>, onDismiss: () -> Unit, onPick: (ModelEntity) -> Unit) {
+internal fun ModelPickerDialog(models: List<ModelEntity>, providers: List<ProviderEntity>, onDismiss: () -> Unit, onPick: (ModelEntity) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val needle = query.trim()
+    val filtered = models.filter { model ->
+        model.modelId.contains(needle, ignoreCase = true) ||
+            providers.firstOrNull { it.id == model.providerId }?.name.orEmpty().contains(needle, ignoreCase = true)
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Choose model") },
         text = {
-            LazyColumn(Modifier.fillMaxWidth().height(360.dp)) {
-                items(models, key = { it.id }) { model ->
-                    val provider = providers.firstOrNull { it.id == model.providerId }
-                    ListItem(
-                        headlineContent = { Text(model.modelId) },
-                        supportingContent = { Text(provider?.name.orEmpty()) },
-                        modifier = Modifier.clickable { onPick(model) },
-                    )
+            Column {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Search models") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = if (query.isEmpty()) null else {
+                        { IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear search") } }
+                    },
+                )
+                if (filtered.isEmpty()) InfoText("No matching models")
+                LazyColumn(Modifier.fillMaxWidth().height(360.dp)) {
+                    items(filtered, key = { it.id }) { model ->
+                        val provider = providers.firstOrNull { it.id == model.providerId }
+                        ListItem(
+                            headlineContent = { Text(model.modelId) },
+                            supportingContent = { Text(provider?.name.orEmpty()) },
+                            modifier = Modifier.clickable { onPick(model) },
+                        )
+                    }
                 }
             }
         },

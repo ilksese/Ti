@@ -97,8 +97,10 @@ class OpenAiClient {
         }
         val body = baseBody(model, stream = true).apply {
             put("messages", requestMessages)
-            put("tools", tools)
-            put("tool_choice", JsonPrimitive("auto"))
+            if (tools.isNotEmpty()) {
+                put("tools", tools)
+                put("tool_choice", JsonPrimitive("auto"))
+            }
         }
         val request = postRequest(provider, body)
         client.newCall(request).execute().use { response ->
