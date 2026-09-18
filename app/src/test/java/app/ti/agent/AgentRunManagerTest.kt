@@ -158,7 +158,7 @@ class AgentRunManagerTest {
 
     @Test
     fun persistsReasoningPerSuccessfulModelRequestAndExcludesItFromFollowup() {
-        scripts.streams += sseReasoningToolCall("deciding", "list_directory", """{"path":""}""")
+        scripts.streams += sseReasoningToolCall("deciding", "list_dir", """{"path":""}""")
         scripts.streams += sseReasoningText("checking result", "All done")
 
         manager.send(sessionId, "inspect the repo")
@@ -177,7 +177,7 @@ class AgentRunManagerTest {
     fun discardsReasoningFromFailedAttemptBeforeRetry() {
         scripts.streams += sse(
             """{"choices":[{"delta":{"reasoning_content":"discard me"}}]}""",
-            """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"list_directory","arguments":"{}"}}]}}]}""",
+            """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"list_dir","arguments":"{}"}}]}}]}""",
         )
         scripts.streams += sseReasoningText("keep me", "done")
 
@@ -205,7 +205,7 @@ class AgentRunManagerTest {
     @Test
     fun executesMultipleReadOnlyToolsInOneRound() {
         scripts.streams += sseToolCalls(
-            "call_1" to ("list_directory" to """{"path":""}"""),
+            "call_1" to ("list_dir" to """{"path":""}"""),
             "call_2" to ("write_file" to """{"path":"a.txt","content":"x"}"""),
         )
         scripts.streams += sseText("done")
@@ -217,6 +217,24 @@ class AgentRunManagerTest {
         assertEquals(2, tools.size)
         assertTrue(tools.all { it.status == "complete" })
         assertEquals("x", File(repoDir, "a.txt").readText())
+    }
+
+    @Test
+    fun editRequiresReadFirstAndRunsWithoutApproval() {
+        File(repoDir, "a.txt").writeText("old value")
+        scripts.streams += toolCallSse("edit", """{"path":"a.txt","old_text":"old","new_text":"new"}""")
+        scripts.streams += toolCallSse("read", """{"path":"a.txt"}""")
+        scripts.streams += toolCallSse("edit", """{"path":"a.txt","old_text":"old","new_text":"new"}""")
+        scripts.streams += sseText("done")
+
+        manager.send(sessionId, "edit a.txt")
+        awaitFinished()
+
+        val tools = messages().filter { it.role == "tool" }
+        assertEquals(listOf("error", "complete", "complete"), tools.map { it.status })
+        assertTrue(tools[0].content.contains("read tool"))
+        assertEquals("1: old value\n", tools[1].content)
+        assertEquals("new value", File(repoDir, "a.txt").readText())
     }
 
     @Test
@@ -285,7 +303,7 @@ class AgentRunManagerTest {
 
     @Test
     fun stopsAfterTwentyToolRounds() {
-        repeat(20) { scripts.streams += toolCallSse("list_directory", """{"path":""}""") }
+        repeat(20) { scripts.streams += toolCallSse("list_dir", """{"path":""}""") }
 
         manager.send(sessionId, "loop forever")
         awaitFinished()

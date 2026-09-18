@@ -19,28 +19,36 @@ internal val MUTATING_GIT_TOOLS = setOf(
 internal val NO_TOOLS: JsonArray = buildJsonArray {}
 
 internal val TOOLS: JsonArray = buildJsonArray {
-    add(tool("list_directory", "List up to 200 direct children of a directory", properties(
+    add(tool("read", "Read a UTF-8 file with line numbers, up to 200KB", properties(
+        "path" to stringProperty("Relative file path"),
+        "start_line" to intProperty("One-based first line"),
+        "limit" to intProperty("Maximum number of lines to read"),
+    ), listOf("path")))
+    add(tool("edit", "Performs exact string replacements in an existing file that was read earlier in this session; it cannot create files", properties(
+        "path" to stringProperty("Relative file path"),
+        "old_text" to stringProperty("Exact text to replace"),
+        "new_text" to stringProperty("Replacement text"),
+        "replace_all" to boolProperty("Replace every occurrence instead of requiring a unique match (default false)"),
+    ), listOf("path", "old_text", "new_text")))
+    add(tool("list_dir", "List up to 200 direct children of a directory", properties(
         "path" to stringProperty("Relative directory path; use empty string for root"),
         "offset" to intProperty("Number of entries to skip"),
     ), listOf("path")))
-    add(tool("read_file", "Read a UTF-8 file with line numbers, up to 200KB", properties(
-        "path" to stringProperty("Relative file path"),
-        "start_line" to intProperty("One-based first line"),
-    ), listOf("path")))
-    add(tool("search_text", "Search literal text in UTF-8 repository files, up to 200 results", properties(
-        "query" to stringProperty("Literal case-sensitive text"),
-        "path" to stringProperty("Relative path to search; empty for root"),
+    add(tool("grep", "Search file contents with a case-sensitive regular expression (ripgrep-style), up to 200 matches", properties(
+        "pattern" to stringProperty("Regular expression; escape literal special characters"),
+        "path" to stringProperty("Relative directory to search; empty for root"),
         "offset" to intProperty("Number of matches to skip"),
-    ), listOf("query", "path")))
+        "include" to stringProperty("Optional glob to filter files (e.g. *.kt); * matches within one path segment, a pattern without / matches the file name at any depth"),
+    ), listOf("pattern", "path")))
+    add(tool("glob", "Find files matching a glob pattern (fd-style, files only), up to 200 results", properties(
+        "pattern" to stringProperty("Glob pattern; * matches within one path segment, ** crosses segments, a pattern without / matches the file name at any depth (e.g. *.kt)"),
+        "path" to stringProperty("Relative directory to search; empty for root"),
+        "offset" to intProperty("Number of results to skip"),
+    ), listOf("pattern", "path")))
     add(tool("write_file", "Create or replace a UTF-8 file", properties(
         "path" to stringProperty("Relative file path"),
         "content" to stringProperty("Complete file content"),
     ), listOf("path", "content")))
-    add(tool("replace_text", "Replace one unique exact text occurrence", properties(
-        "path" to stringProperty("Relative file path"),
-        "old_text" to stringProperty("Unique exact text"),
-        "new_text" to stringProperty("Replacement text"),
-    ), listOf("path", "old_text", "new_text")))
     add(tool("delete_file", "Delete one file", properties("path" to stringProperty("Relative file path")), listOf("path")))
     add(tool("move_file", "Move or rename one file", properties(
         "from" to stringProperty("Existing relative path"),
@@ -85,4 +93,9 @@ private fun intProperty(description: String) = buildJsonObject {
     put("type", "integer")
     put("description", description)
     put("minimum", 0)
+}
+
+private fun boolProperty(description: String) = buildJsonObject {
+    put("type", "boolean")
+    put("description", description)
 }

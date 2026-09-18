@@ -21,6 +21,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -53,6 +54,7 @@ class AgentRunManager(
     private val json = Json { ignoreUnknownKeys = true }
     private val jobs = ConcurrentHashMap<String, Job>()
     private val approvals = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+    private val readFiles = ConcurrentHashMap<String, MutableSet<String>>()
     private val lastTimestamp = AtomicLong(System.currentTimeMillis())
     private val mutableStates = MutableStateFlow<Map<String, AgentRunState>>(emptyMap())
     val states: StateFlow<Map<String, AgentRunState>> = mutableStates.asStateFlow()
@@ -223,7 +225,7 @@ class AgentRunManager(
         }
         val result = runCatching {
             requireNotNull(repo) { "This chat is not attached to a repository" }
-            executeTool(repo, call)
+            executeTool(sessionId, repo, call)
         }
         dao.finishTool(
             toolMessage.id,
@@ -233,14 +235,32 @@ class AgentRunManager(
         dao.updateSessionStatus(sessionId, "running")
     }
 
-    private suspend fun executeTool(repo: RepositoryEntity, call: ToolCall): String {
+    private suspend fun executeTool(sessionId: String, repo: RepositoryEntity, call: ToolCall): String {
         val args = json.parseToJsonElement(call.arguments.ifBlank { "{}" }).jsonObject
         return when (call.name) {
-            "list_directory" -> files.list(repo, args.string("path"), args.integer("offset"))
-            "read_file" -> files.read(repo, args.string("path"), args.integer("start_line", 1))
-            "search_text" -> files.search(repo, args.string("query"), args.string("path"), args.integer("offset"))
-            "write_file" -> files.write(repo, args.string("path"), args.string("content"))
-            "replace_text" -> files.replace(repo, args.string("path"), args.string("old_text"), args.string("new_text"))
+            "read" -> {
+                val result = files.read(repo, args.string("path"), args.integer("start_line", 1), args.integer("limit", Int.MAX_VALUE))
+                markRead(sessionId, args.string("path"))
+                result
+            }
+            "edit" -> {
+                requireReadBeforeEdit(sessionId, args.string("path"))
+                files.replace(
+                    repo,
+                    args.string("path"),
+                    args.string("old_text"),
+                    args.string("new_text"),
+                    args.optionalBoolean("replace_all"),
+                )
+            }
+            "list_dir" -> files.list(repo, args.string("path"), args.integer("offset"))
+            "grep" -> files.grep(repo, args.string("pattern"), args.string("path"), args.integer("offset"), args.optionalString("include"))
+            "glob" -> files.glob(repo, args.string("pattern"), args.string("path"), args.integer("offset"))
+            "write_file" -> {
+                val result = files.write(repo, args.string("path"), args.string("content"))
+                markRead(sessionId, args.string("path"))
+                result
+            }
             "delete_file" -> files.delete(repo, args.string("path"))
             "move_file" -> files.move(repo, args.string("from"), args.string("to"))
             "git_status" -> git.status(repo)
@@ -258,6 +278,16 @@ class AgentRunManager(
             "git_switch_branch" -> "Switched to ${git.switchBranch(repo, args.string("name"))}"
             "git_delete_branch" -> "Deleted ${git.deleteBranch(repo, args.string("name"))}"
             else -> error("Unknown tool: ${call.name}")
+        }
+    }
+
+    private fun markRead(sessionId: String, path: String) {
+        readFiles.computeIfAbsent(sessionId) { HashSet() }.add(path)
+    }
+
+    private fun requireReadBeforeEdit(sessionId: String, path: String) {
+        require(readFiles[sessionId]?.contains(path) == true) {
+            "File has not been read in this conversation. Use the read tool on $path before editing it."
         }
     }
 
@@ -367,7 +397,8 @@ class AgentRunManager(
         so you have no tools and cannot read, write, or run anything. Answer from the conversation only.
     """.trimIndent() else """
         You are Ti, a code agent working in the repository ${repo.name}.
-        Inspect relevant files before editing. Use tools instead of inventing file contents.
+        Read files with the read tool before editing them; the edit tool rejects files not read in this session.
+        Use tools instead of inventing file contents.
         Keep changes minimal and scoped to the user's request. You cannot run shell commands, builds, or tests.
         File edits execute immediately. Mutating Git tools require user approval.
         Paths are relative to the repository root and .git is inaccessible.
@@ -381,4 +412,7 @@ class AgentRunManager(
 
     private fun JsonObject.integer(name: String, default: Int = 0): Int =
         this[name]?.jsonPrimitive?.intOrNull ?: default
+
+    private fun JsonObject.optionalBoolean(name: String, default: Boolean = false): Boolean =
+        this[name]?.jsonPrimitive?.booleanOrNull ?: default
 }
