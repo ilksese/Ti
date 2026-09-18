@@ -84,7 +84,7 @@ class OpenAiClient {
         systemPrompt: String,
         summary: String?,
         tools: JsonArray,
-        onReasoning: () -> Unit,
+        onReasoning: (String) -> Unit,
         onDelta: (String) -> Unit,
     ): ChatResult = withContext(Dispatchers.IO) {
         val requestMessages = buildJsonArray {
@@ -110,16 +110,20 @@ class OpenAiClient {
             val content = StringBuilder()
             val calls = linkedMapOf<Int, MutableToolCall>()
             val source = checkNotNull(response.body).source()
+            var done = false
             while (!source.exhausted()) {
                 val line = source.readUtf8Line() ?: break
                 if (!line.startsWith("data:")) continue
                 val data = line.removePrefix("data:").trim()
-                if (data == "[DONE]") break
+                if (data == "[DONE]") {
+                    done = true
+                    break
+                }
                 if (data.isEmpty()) continue
                 val delta = json.parseToJsonElement(data).jsonObject["choices"]?.jsonArray
                     ?.firstOrNull()?.jsonObject?.get("delta")?.jsonObject ?: continue
                 ((delta["reasoning"] ?: delta["reasoning_content"]) as? JsonPrimitive)
-                    ?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { onReasoning() }
+                    ?.contentOrNull?.takeIf { it.isNotEmpty() }?.let(onReasoning)
                 delta["content"]?.jsonPrimitive?.contentOrNull?.let {
                     content.append(it)
                     onDelta(it)
@@ -135,6 +139,7 @@ class OpenAiClient {
                     }
                 }
             }
+            check(done) { "Chat stream ended before [DONE]" }
             ChatResult(
                 content = content.toString(),
                 toolCalls = calls.values.map {

@@ -89,7 +89,7 @@ class OpenAiClientTest {
                 """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"file","arguments":"th\":\"a.txt\"}"}}]}}]}""",
             ),
         )
-        var reasoning = 0
+        val reasoning = StringBuilder()
         val deltas = mutableListOf<String>()
 
         val result = client.streamChat(
@@ -99,13 +99,13 @@ class OpenAiClientTest {
             systemPrompt = "sys",
             summary = null,
             tools = TOOLS,
-            onReasoning = { reasoning++ },
+            onReasoning = { reasoning.append(it) },
             onDelta = { deltas += it },
         )
 
         assertEquals("Hello", result.content)
         assertEquals(listOf("Hel", "lo"), deltas)
-        assertEquals(1, reasoning)
+        assertEquals("thinking", reasoning.toString())
         assertEquals(1, result.toolCalls.size)
         assertEquals("call_1", result.toolCalls[0].id)
         assertEquals("read_file", result.toolCalls[0].name)
@@ -193,6 +193,21 @@ class OpenAiClientTest {
         }.exceptionOrNull()
 
         assertTrue(error!!.message!!.contains("Tool call missing id"))
+    }
+
+    @Test
+    fun streamChatFailsWhenStreamEndsBeforeDone() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"partial\"}}]}\n\n"),
+        )
+
+        val error = runCatching {
+            client.streamChat(provider, model, emptyList(), "sys", null, TOOLS, {}, {})
+        }.exceptionOrNull()
+
+        assertTrue(error!!.message!!.contains("Chat stream ended before [DONE]"))
     }
 
     @Test

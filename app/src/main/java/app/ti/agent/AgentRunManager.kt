@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.asStateFlow
 data class AgentRunState(
     val running: Boolean = false,
     val partial: String = "",
+    val reasoning: String = "",
+    val reasoningId: String? = null,
     val error: String? = null,
     val pendingToolCallId: String? = null,
     val retryText: String? = null,
@@ -92,15 +94,21 @@ class AgentRunManager(
             compact(sessionId, force = false)
             session = requireNotNull(dao.session(sessionId))
             var partial = ""
+            var reasoning = ""
+            var reasoningId: String? = null
             setState(sessionId, AgentRunState(running = true))
             val result = withLlmRetry(
                 onRetry = { retry, delayMs, _ ->
                     partial = ""
+                    reasoning = ""
+                    reasoningId = null
                     val wait = if (delayMs == 0L) "now" else "in ${delayMs / 1_000}s"
                     setState(sessionId, AgentRunState(running = true, retryText = "Retry $retry/5 $wait"))
                 },
             ) { attempt ->
                 partial = ""
+                reasoning = ""
+                reasoningId = null
                 setState(
                     sessionId,
                     AgentRunState(
@@ -115,13 +123,42 @@ class AgentRunManager(
                     systemPrompt = systemPrompt(repo),
                     summary = session.summary,
                     tools = if (repo == null) NO_TOOLS else TOOLS,
-                    onReasoning = {
-                        if (partial.isBlank()) setState(sessionId, AgentRunState(running = true, retryText = "Thinking..."))
+                    onReasoning = { delta ->
+                        if (reasoning.isEmpty()) reasoningId = UUID.randomUUID().toString()
+                        reasoning += delta
+                        setState(
+                            sessionId,
+                            AgentRunState(
+                                running = true,
+                                partial = partial,
+                                reasoning = reasoning,
+                                reasoningId = reasoningId,
+                                retryText = if (partial.isBlank()) "Thinking..." else null,
+                            ),
+                        )
                     },
                     onDelta = { delta ->
                         partial += delta
-                        setState(sessionId, AgentRunState(running = true, partial = partial))
+                        setState(
+                            sessionId,
+                            AgentRunState(
+                                running = true,
+                                partial = partial,
+                                reasoning = reasoning,
+                                reasoningId = reasoningId,
+                            ),
+                        )
                     },
+                )
+            }
+            if (reasoning.isNotBlank()) {
+                dao.saveMessage(
+                    message(
+                        sessionId = sessionId,
+                        role = "reasoning",
+                        content = reasoning,
+                        id = checkNotNull(reasoningId),
+                    ),
                 )
             }
             val toolCallsJson = result.toolCalls.takeIf { it.isNotEmpty() }?.let(::encodeToolCalls)
@@ -284,12 +321,13 @@ class AgentRunManager(
         sessionId: String,
         role: String,
         content: String,
+        id: String = UUID.randomUUID().toString(),
         name: String? = null,
         toolCallId: String? = null,
         toolCallsJson: String? = null,
         status: String = "complete",
     ) = MessageEntity(
-        id = UUID.randomUUID().toString(),
+        id = id,
         sessionId = sessionId,
         role = role,
         content = content,

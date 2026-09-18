@@ -23,6 +23,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -49,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
@@ -66,15 +69,28 @@ internal fun SessionScreen(container: AppContainer, nav: NavController, sessionI
     val states by container.agents.states.collectAsStateWithLifecycle()
     val state = states[sessionId]
     val visibleMessages = messages.filterNot { it.role == "assistant" && it.content.isBlank() }
+    val persistedMessageIds = messages.mapTo(mutableSetOf()) { it.id }
+    val liveReasoning = state?.reasoning
+        ?.takeIf { it.isNotBlank() && state.reasoningId != null && state.reasoningId !in persistedMessageIds }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var input by remember { mutableStateOf("") }
     var rename by remember { mutableStateOf(false) }
     var showModel by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    LaunchedEffect(visibleMessages.size, state?.partial) {
-        val extra = if (state?.partial?.isNotBlank() == true) 1 else 0
-        if (visibleMessages.isNotEmpty() || extra > 0) listState.animateScrollToItem((visibleMessages.size + extra - 1).coerceAtLeast(0))
+    val isAtBottom = listState.layoutInfo.let { layout ->
+        val last = layout.visibleItemsInfo.lastOrNull()
+        last == null || (last.index == layout.totalItemsCount - 1 && last.offset + last.size <= layout.viewportEndOffset)
+    }
+    LaunchedEffect(visibleMessages.size, state?.partial, state?.reasoning, state?.reasoningId, state?.retryText, state?.error) {
+        val transientItems = when {
+            liveReasoning != null -> 1 + if (state?.partial?.isNullOrBlank() == false) 1 else 0
+            state?.partial?.isNullOrBlank() == false -> 1
+            state?.running == true && state.reasoning.isBlank() -> 1
+            else -> 0
+        } + if (state?.error != null) 1 else 0
+        val itemCount = visibleMessages.size + transientItems
+        if (isAtBottom && itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
     Scaffold(
@@ -126,10 +142,15 @@ internal fun SessionScreen(container: AppContainer, nav: NavController, sessionI
             items(visibleMessages, key = { it.id }) { message ->
                 MessageRow(message, container)
             }
+            liveReasoning?.let { reasoning ->
+                item(key = checkNotNull(state?.reasoningId)) {
+                    ReasoningBlock(checkNotNull(state?.reasoningId), reasoning, running = true)
+                }
+            }
             state?.partial?.takeIf { it.isNotBlank() }?.let { partial ->
                 item { MessageBubble("assistant", partial) }
             }
-            if (state?.running == true && state.partial.isBlank()) {
+            if (state?.running == true && state.reasoning.isBlank() && state.partial.isBlank()) {
                 item { Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text(state.retryText ?: "Working...") } }
             }
             state?.error?.let { item { ErrorText(it) } }
@@ -153,7 +174,9 @@ internal fun SessionScreen(container: AppContainer, nav: NavController, sessionI
 
 @Composable
 private fun MessageRow(message: MessageEntity, container: AppContainer) {
-    if (message.role == "tool") {
+    if (message.role == "reasoning") {
+        ReasoningBlock(message.id, message.content, running = false)
+    } else if (message.role == "tool") {
         var expanded by remember(message.id) { mutableStateOf(false) }
         Card(
             modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
@@ -178,6 +201,42 @@ private fun MessageRow(message: MessageEntity, container: AppContainer) {
         Text(message.content, style = MaterialTheme.typography.labelMedium, color = if (message.status == "error") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary)
     } else {
         MessageBubble(message.role, message.content)
+    }
+}
+
+@Composable
+private fun ReasoningBlock(id: String, content: String, running: Boolean) {
+    var expanded by remember(id) { mutableStateOf(false) }
+    val body = when {
+        expanded -> content
+        running -> content.split('\n').takeLast(4).joinToString("\n")
+        else -> ""
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { expanded = !expanded },
+        shape = RoundedCornerShape(6.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.padding(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (running) "Thinking..." else "Thinking", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse thinking" else "Expand thinking",
+                )
+            }
+            if (body.isNotEmpty()) {
+                SelectionContainer {
+                    Text(
+                        body,
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = if (expanded) Int.MAX_VALUE else 4,
+                        overflow = TextOverflow.Clip,
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -157,6 +157,52 @@ class AgentRunManagerTest {
     }
 
     @Test
+    fun persistsReasoningPerSuccessfulModelRequestAndExcludesItFromFollowup() {
+        scripts.streams += sseReasoningToolCall("deciding", "list_directory", """{"path":""}""")
+        scripts.streams += sseReasoningText("checking result", "All done")
+
+        manager.send(sessionId, "inspect the repo")
+        awaitFinished()
+
+        val stored = messages()
+        assertEquals(listOf("user", "reasoning", "assistant", "tool", "reasoning", "assistant"), stored.map { it.role })
+        assertEquals("deciding", stored[1].content)
+        assertEquals("checking result", stored[4].content)
+        assertTrue(scripts.bodies[1].contains("All done").not())
+        assertTrue(scripts.bodies[1].contains("deciding").not())
+        assertTrue(scripts.bodies[1].contains("checking result").not())
+    }
+
+    @Test
+    fun discardsReasoningFromFailedAttemptBeforeRetry() {
+        scripts.streams += sse(
+            """{"choices":[{"delta":{"reasoning_content":"discard me"}}]}""",
+            """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"list_directory","arguments":"{}"}}]}}]}""",
+        )
+        scripts.streams += sseReasoningText("keep me", "done")
+
+        manager.send(sessionId, "retry")
+        awaitFinished()
+
+        assertEquals(listOf("user", "reasoning", "assistant"), messages().map { it.role })
+        assertEquals("keep me", messages()[1].content)
+    }
+
+    @Test
+    fun discardsReasoningWhenStreamEndsBeforeDone() {
+        scripts.streams += sseWithoutDone(
+            """{"choices":[{"delta":{"reasoning_content":"discard me"}}]}""",
+        )
+        scripts.streams += sseReasoningText("keep me", "done")
+
+        manager.send(sessionId, "retry after disconnect")
+        awaitFinished()
+
+        assertEquals(listOf("user", "reasoning", "assistant"), messages().map { it.role })
+        assertEquals("keep me", messages()[1].content)
+    }
+
+    @Test
     fun executesMultipleReadOnlyToolsInOneRound() {
         scripts.streams += sseToolCalls(
             "call_1" to ("list_directory" to """{"path":""}"""),
@@ -356,8 +402,22 @@ private fun sse(vararg payloads: String) = MockResponse()
     .setHeader("Content-Type", "text/event-stream")
     .setBody(payloads.joinToString("") { "data: $it\n\n" } + "data: [DONE]\n\n")
 
+private fun sseWithoutDone(vararg payloads: String) = MockResponse()
+    .setHeader("Content-Type", "text/event-stream")
+    .setBody(payloads.joinToString("") { "data: $it\n\n" })
+
 private fun sseText(content: String) =
     sse("""{"choices":[{"delta":{"content":${JsonPrimitive(content)}}}]}""")
+
+private fun sseReasoningText(reasoning: String, content: String) = sse(
+    """{"choices":[{"delta":{"reasoning_content":${JsonPrimitive(reasoning)}}}]}""",
+    """{"choices":[{"delta":{"content":${JsonPrimitive(content)}}}]}""",
+)
+
+private fun sseReasoningToolCall(reasoning: String, name: String, arguments: String) = sse(
+    """{"choices":[{"delta":{"reasoning_content":${JsonPrimitive(reasoning)}}}]}""",
+    """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"$name","arguments":${JsonPrimitive(arguments)}}}]}}]}""",
+)
 
 private fun sseToolCalls(vararg calls: Pair<String, Pair<String, String>>) = sse(
     buildString {
