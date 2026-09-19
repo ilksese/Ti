@@ -85,8 +85,8 @@ class OpenAiClientTest {
                 """{"choices":[{"delta":{"reasoning_content":"thinking"}}]}""",
                 """{"choices":[{"delta":{"content":"Hel"}}]}""",
                 """{"choices":[{"delta":{"content":"lo"}}]}""",
-                """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_","arguments":"{\"pa"}}]}}]}""",
-                """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"file","arguments":"th\":\"a.txt\"}"}}]}}]}""",
+                """{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"rea","arguments":"{\"pa"}}]}}]}""",
+                """{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"d","arguments":"th\":\"a.txt\"}"}}]}}]}""",
             ),
         )
         val reasoning = StringBuilder()
@@ -108,7 +108,7 @@ class OpenAiClientTest {
         assertEquals("thinking", reasoning.toString())
         assertEquals(1, result.toolCalls.size)
         assertEquals("call_1", result.toolCalls[0].id)
-        assertEquals("read_file", result.toolCalls[0].name)
+        assertEquals("read", result.toolCalls[0].name)
         assertEquals("""{"path":"a.txt"}""", result.toolCalls[0].arguments)
     }
 
@@ -156,7 +156,7 @@ class OpenAiClientTest {
         assertEquals("auto", body["tool_choice"]!!.jsonPrimitive.content)
         assertEquals(TOOLS.size, body["tools"]!!.jsonArray.size)
         assertTrue(body["tools"]!!.jsonArray.any {
-            it.jsonObject["function"]!!.jsonObject["name"]!!.jsonPrimitive.content == "replace_text"
+            it.jsonObject["function"]!!.jsonObject["name"]!!.jsonPrimitive.content == "edit"
         })
     }
 
