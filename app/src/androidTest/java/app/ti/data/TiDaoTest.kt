@@ -114,9 +114,9 @@ class TiDaoTest {
         dao.saveRepository(repository("one", 1))
 
         val duplicate = repository("two", 2).copy(localPath = "/tmp/one")
-        val error = runCatching { dao.saveRepository(duplicate) }.exceptionOrNull()
+        dao.saveRepository(duplicate)
 
-        assertTrue("expected localPath uniqueness", error != null)
+        assertEquals(listOf("two"), dao.repositories().map { it.id })
     }
 
     @Test

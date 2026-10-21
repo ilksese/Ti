@@ -390,7 +390,7 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
                         "`modelId` TEXT NOT NULL, `title` TEXT NOT NULL, `titleGenerated` INTEGER NOT NULL, " +
                         "`status` TEXT NOT NULL, `summary` TEXT, `summaryThroughAt` INTEGER, `createdAt` INTEGER NOT NULL, " +
                         "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
-                        "FOREIGN KEY(`repositoryId`) REFERENCES `repositories_new`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, " +
+                        "FOREIGN KEY(`repositoryId`) REFERENCES `repositories`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, " +
                         "FOREIGN KEY(`modelId`) REFERENCES `models`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
                 )
                 db.execSQL(
@@ -398,7 +398,7 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
                         "`role` TEXT NOT NULL, `content` TEXT NOT NULL, `name` TEXT, `toolCallId` TEXT, " +
                         "`toolCallsJson` TEXT, `status` TEXT NOT NULL, `compacted` INTEGER NOT NULL, " +
                         "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
-                        "FOREIGN KEY(`sessionId`) REFERENCES `sessions_new`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                        "FOREIGN KEY(`sessionId`) REFERENCES `sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
                 )
                 db.execSQL(
                     "INSERT INTO `repositories_new` (`id`, `name`, `remoteUrl`, `localPath`, `username`, `token`, `createdAt`, `status`, `progress`) " +
@@ -414,8 +414,9 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
                         "`status`, `compacted`, `createdAt`) SELECT `id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, " +
                         "`toolCallsJson`, `status`, `compacted`, `createdAt` FROM `messages`",
                 )
-                // Remove children before their referenced tables so foreign-key checks
-                // remain enabled throughout the migration.
+                // New tables reference the old names until the rename completes.
+                // Temporarily disable checks while swapping the dependency chain.
+                db.execSQL("PRAGMA foreign_keys=OFF")
                 db.execSQL("DROP TABLE `messages`")
                 db.execSQL("DROP TABLE `sessions`")
                 db.execSQL("DROP TABLE `repositories`")
@@ -426,6 +427,7 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_modelId` ON `sessions` (`modelId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_sessionId` ON `messages` (`sessionId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_toolCallId` ON `messages` (`toolCallId`)")
+                db.execSQL("PRAGMA foreign_keys=ON")
             }
         }
 
