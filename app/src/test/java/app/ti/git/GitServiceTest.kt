@@ -82,6 +82,16 @@ class GitServiceTest {
     }
 
     @Test
+    fun detectsAndInitializesRepositories() = run {
+        val directory = temp.newFolder("import")
+        assertFalse(git.isRepository(directory))
+
+        git.initialize(directory)
+
+        assertTrue(git.isRepository(directory))
+    }
+
+    @Test
     fun statusReportsCleanUntrackedModifiedAndMissing() = run {
         initRepo()
         assertEquals("Working tree clean", git.status(repo))

@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Card
@@ -37,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,7 +46,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import app.ti.AppContainer
+
 import app.ti.validLocalRepositoryName
+
+
+import app.ti.LocalRepositoryInspection
+import kotlinx.coroutines.launch
+import java.io.File
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,10 +61,27 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
     val repositories by container.dao.observeRepositories().collectAsStateWithLifecycle(emptyList())
     var showActions by remember { mutableStateOf(false) }
     var showClone by remember { mutableStateOf(false) }
+
     var showLocal by remember { mutableStateOf(false) }
 
+
+    var showImport by remember { mutableStateOf(false) }
+    var confirmInitialize by remember { mutableStateOf<File?>(null) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Repositories") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Repositories") },
+                actions = {
+                    IconButton(onClick = { importError = null; showImport = true }) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = "Add existing local repository")
+                    }
+                },
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(onClick = { showActions = true }) {
                 Icon(Icons.Default.Add, contentDescription = "Add repository")
@@ -80,6 +106,7 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
                             Text(
                                 when (repo.status) {
                                     "cloning" -> repo.progress.ifBlank { "Loading..." }
+                                    "creating" -> repo.progress.ifBlank { "Importing..." }
                                     "failed" -> "Clone failed: ${repo.progress}"
                                     else -> repo.remoteUrl ?: repo.localPath
                                 },
@@ -142,6 +169,75 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             },
         )
     }
+
+    if (showImport) {
+        ImportDialog(
+            directories = container.localRepositoryDirectories(),
+            error = importError,
+            onDismiss = { showImport = false },
+            onSelect = { directory ->
+                scope.launch {
+                    runCatching { container.inspectLocalRepository(directory) }
+                        .onSuccess { inspection: LocalRepositoryInspection ->
+                            when {
+                                inspection.duplicate != null -> importError = "This directory is already added"
+                                inspection.isGitRepository -> {
+                                    showImport = false
+                                    container.importLocalRepository(inspection.directory, initialize = false)
+                                }
+                                else -> {
+                                    showImport = false
+                                    confirmInitialize = inspection.directory
+                                }
+                            }
+                        }
+                        .onFailure { importError = it.message ?: "Unable to inspect directory" }
+                }
+            },
+        )
+    }
+
+    confirmInitialize?.let { directory ->
+        AlertDialog(
+            onDismissRequest = { confirmInitialize = null },
+            title = { Text("Initialize Git repository?") },
+            text = { Text("${directory.name} is not a Git repository. Initialize Git in this existing directory?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmInitialize = null
+                    container.importLocalRepository(directory, initialize = true)
+                }) { Text("Initialize") }
+            },
+            dismissButton = { TextButton(onClick = { confirmInitialize = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun ImportDialog(
+    directories: List<File>,
+    error: String?,
+    onDismiss: () -> Unit,
+    onSelect: (File) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add existing local repository") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Select a directory under the app repository root.", style = MaterialTheme.typography.bodySmall)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (directories.isEmpty()) Text("No directories available")
+                directories.forEach { directory ->
+                    TextButton(onClick = { onSelect(directory) }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Folder, contentDescription = null)
+                        Text(directory.name, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

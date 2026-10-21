@@ -29,6 +29,16 @@ class GitService {
         Git.init().setDirectory(directory).call().close()
     }
 
+    /** Returns true when [directory] contains a JGit repository. */
+    suspend fun isRepository(directory: File): Boolean = withContext(Dispatchers.IO) {
+        runCatching { Git.open(directory).use { } }.isSuccess
+    }
+
+    /** Initializes a repository in an existing directory without deleting its contents. */
+    suspend fun initialize(directory: File) = withContext(Dispatchers.IO) {
+        Git.init().setDirectory(directory).call().close()
+    }
+
     suspend fun clone(
         url: String,
         directory: File,
