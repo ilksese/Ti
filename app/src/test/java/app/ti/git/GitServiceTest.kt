@@ -20,6 +20,29 @@ class GitServiceTest {
     private val git = GitService()
     private val author = "Ti Tester" to "ti@example.com"
 
+    @Test
+    fun initializesNewRepositoryInEmptyDirectory() = run {
+        val target = temp.newFolder("new-repo")
+        target.delete()
+
+        git.init(target)
+
+        assertTrue(File(target, ".git").isDirectory)
+        Git.open(target).use { assertTrue(it.repository.objectDatabase.exists()) }
+    }
+
+    @Test
+    fun initRejectsNonEmptyDirectory() = run {
+        val target = temp.newFolder("non-empty")
+        File(target, "README.md").writeText("content")
+
+        val error = runCatching { git.init(target) }.exceptionOrNull()
+
+        assertTrue("expected non-empty directory to be rejected", error != null)
+        assertTrue(File(target, "README.md").exists())
+        assertFalse(File(target, ".git").exists())
+    }
+
     private fun initRepo() {
         dir = temp.newFolder("repo")
         Git.init().setDirectory(dir).call().close()
