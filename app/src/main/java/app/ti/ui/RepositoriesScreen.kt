@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Card
@@ -47,6 +48,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import app.ti.AppContainer
 import app.ti.data.RepositoryEntity
+import app.ti.data.RepositoryStatus
 
 import app.ti.validLocalRepositoryName
 
@@ -97,7 +99,13 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             contentPadding = padding + PaddingValues(bottom = 88.dp),
         ) {
             items(repositories, key = { it.id }) { repo ->
-                val ready = repo.status == "ready"
+                val ready = repo.status == RepositoryStatus.READY
+                val retryable = repo.status in setOf(
+                    RepositoryStatus.FAILED,
+                    RepositoryStatus.PERMISSION_REQUIRED,
+                    RepositoryStatus.INVALID,
+                    RepositoryStatus.MISSING,
+                )
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
                         .clickable(enabled = ready) { nav.navigate("repo/${repo.id}") },
@@ -107,24 +115,22 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
                         headlineContent = { Text(repo.name) },
                         supportingContent = {
                             Text(
-                                when (repo.status) {
-                                    "cloning" -> repo.progress.ifBlank { "Loading..." }
-                                    "creating" -> repo.progress.ifBlank { "Importing..." }
-                                    "failed" -> "Clone failed: ${repo.progress}"
-                                    else -> repo.remoteUrl ?: repo.localPath
-                                },
+                                repositoryStatusText(repo),
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         },
                         leadingContent = {
-                            if (repo.status == "cloning") CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                            if (repo.status == RepositoryStatus.CREATING || repo.status == RepositoryStatus.CLONING) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                             else Icon(Icons.Default.Folder, contentDescription = null)
                         },
                         trailingContent = {
-                            IconButton(onClick = { repositoryActions = repo }) {
-                                Icon(Icons.Default.Delete, "Repository actions")
+                            if (retryable) {
+                                IconButton(onClick = { container.retryRepository(repo) }) {
+                                    Icon(Icons.Default.Refresh, "Retry repository check")
+                                }
                             }
+                            IconButton(onClick = { repositoryActions = repo }) { Icon(Icons.Default.Delete, "Repository actions") }
                         },
                     )
                 }
@@ -255,6 +261,25 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             },
             dismissButton = { TextButton(onClick = { confirmInitialize = null }) { Text("Cancel") } },
         )
+    }
+}
+
+/** Human-readable status text shared by all repository entries. */
+internal fun repositoryStatusText(repo: RepositoryEntity): String {
+    val label = when (repo.status) {
+        RepositoryStatus.CREATING -> "Creating"
+        RepositoryStatus.CLONING -> "Cloning"
+        RepositoryStatus.READY -> "Ready"
+        RepositoryStatus.PERMISSION_REQUIRED -> "Permission required"
+        RepositoryStatus.INVALID -> "Invalid repository"
+        RepositoryStatus.MISSING -> "Missing directory"
+        RepositoryStatus.FAILED -> "Failed"
+        else -> "Unknown status"
+    }
+    return when {
+        repo.status == RepositoryStatus.READY -> "$label: ${repo.remoteUrl ?: repo.localPath}"
+        repo.progress.isBlank() -> label
+        else -> "$label: ${repo.progress}"
     }
 }
 

@@ -48,10 +48,64 @@ class AppContainer(context: Context) {
         scope.launch(Dispatchers.IO) {
             dao.interruptActiveSessions()
             dao.interruptPendingTools()
-            dao.interruptCloningRepositories()
+            recoverRepositories()
         }
         scope.launch {
             if (dao.setting(MODEL_AUTO_COMPLETE)?.value == "true") modelsDev.refreshIfStale()
+        }
+    }
+
+    /** Reconciles persisted repository state after a process restart. */
+    private suspend fun recoverRepositories() {
+        dao.repositories().forEach { repo ->
+            val directory = File(repo.localPath)
+            try {
+                if (!directory.exists() || !directory.isDirectory) {
+                    dao.updateRepositoryClone(repo.id, RepositoryStatus.MISSING, "Directory is missing")
+                    return@forEach
+                }
+                val validGit = git.isRepository(directory)
+                when (repo.status) {
+                    RepositoryStatus.CREATING, RepositoryStatus.CLONING -> {
+                        if (validGit) {
+                            dao.updateRepositoryClone(repo.id, RepositoryStatus.READY, "")
+                        } else {
+                            dao.updateRepositoryClone(
+                                repo.id,
+                                RepositoryStatus.FAILED,
+                                "Operation interrupted; tap Retry to check again",
+                            )
+                        }
+                    }
+                    RepositoryStatus.READY -> if (!validGit) {
+                        dao.updateRepositoryClone(repo.id, RepositoryStatus.INVALID, "Directory is not a Git repository")
+                    }
+                }
+            } catch (_: SecurityException) {
+                dao.updateRepositoryClone(repo.id, RepositoryStatus.PERMISSION_REQUIRED, "Permission required")
+            }
+        }
+    }
+
+    /** Re-checks an unavailable repository without blocking the Repositories screen. */
+    fun retryRepository(repo: RepositoryEntity) {
+        scope.launch(Dispatchers.IO) {
+            dao.updateRepositoryClone(repo.id, RepositoryStatus.CREATING, "Checking repository")
+            try {
+                val directory = File(repo.localPath)
+                when {
+                    !directory.exists() || !directory.isDirectory ->
+                        dao.updateRepositoryClone(repo.id, RepositoryStatus.MISSING, "Directory is missing")
+                    git.isRepository(directory) ->
+                        dao.updateRepositoryClone(repo.id, RepositoryStatus.READY, "")
+                    else ->
+                        dao.updateRepositoryClone(repo.id, RepositoryStatus.INVALID, "Directory is not a Git repository")
+                }
+            } catch (_: SecurityException) {
+                dao.updateRepositoryClone(repo.id, RepositoryStatus.PERMISSION_REQUIRED, "Permission required")
+            } catch (error: Throwable) {
+                dao.updateRepositoryClone(repo.id, RepositoryStatus.FAILED, error.message ?: "Repository check failed")
+            }
         }
     }
 
