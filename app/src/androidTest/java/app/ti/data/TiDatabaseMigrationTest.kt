@@ -26,7 +26,7 @@ class TiDatabaseMigrationTest {
     }
 
     @Test
-    fun migratingFromVersion1To7ProducesValidSchemaAndKeepsData() {
+    fun migratingFromVersion1To8ProducesValidSchemaAndKeepsData() {
         context.deleteDatabase(dbName)
         createVersion1Database()
 
@@ -38,6 +38,7 @@ class TiDatabaseMigrationTest {
                 TiDatabase.MIGRATION_4_5,
                 TiDatabase.MIGRATION_5_6,
                 TiDatabase.MIGRATION_6_7,
+                TiDatabase.MIGRATION_7_8,
             )
             .build()
 

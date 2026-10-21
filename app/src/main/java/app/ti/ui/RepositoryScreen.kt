@@ -78,7 +78,8 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
     var showCommit by remember { mutableStateOf(false) }
     var showBranches by remember { mutableStateOf(false) }
     var showNewSession by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
+    var showDeleteActions by remember { mutableStateOf(false) }
+    var confirmDeleteFiles by remember { mutableStateOf(false) }
     var diff by remember { mutableStateOf<String?>(null) }
 
     fun refresh(value: RepositoryEntity) {
@@ -100,7 +101,7 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
             TopAppBar(
                 title = { Text(repo?.name ?: "Repository", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = { IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete repository") } },
+                actions = { IconButton(onClick = { showDeleteActions = true }) { Icon(Icons.Default.Delete, "Repository actions") } },
             )
         },
         floatingActionButton = {
@@ -181,10 +182,40 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
         }
     }
     diff?.let { DiffDialog(it, onDismiss = { diff = null }) }
-    if (value != null && confirmDelete) {
-        ConfirmDialog("Delete repository and all sessions?", onDismiss = { confirmDelete = false }) {
-            confirmDelete = false
-            container.deleteRepository(value)
+    if (value != null && showDeleteActions) {
+        AlertDialog(
+            onDismissRequest = { showDeleteActions = false },
+            title = { Text("Repository actions") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Removing a repository only removes it from this list.", style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            showDeleteActions = false
+                            container.removeRepository(value)
+                            nav.popBackStack()
+                        },
+                    ) { Text("Remove from list") }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            showDeleteActions = false
+                            confirmDeleteFiles = true
+                        },
+                    ) { Text("Delete local files") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showDeleteActions = false }) { Text("Cancel") } },
+        )
+    }
+    if (value != null && confirmDeleteFiles) {
+        ConfirmDialog(
+            "Delete local files at ${value.localPath}? This cannot be undone.",
+            onDismiss = { confirmDeleteFiles = false },
+        ) {
+            confirmDeleteFiles = false
+            container.deleteRepositoryFiles(value)
             nav.popBackStack()
         }
     }

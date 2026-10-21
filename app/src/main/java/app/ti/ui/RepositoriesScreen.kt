@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,6 +72,7 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
     var showImport by remember { mutableStateOf(false) }
     var confirmInitialize by remember { mutableStateOf<File?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
+    var importDirectories by remember { mutableStateOf<List<File>>(emptyList()) }
     var repositoryActions by remember { mutableStateOf<RepositoryEntity?>(null) }
     var confirmDeleteFiles by remember { mutableStateOf<RepositoryEntity?>(null) }
     val scope = rememberCoroutineScope()
@@ -81,7 +83,7 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             TopAppBar(
                 title = { Text("Repositories") },
                 actions = {
-                    IconButton(onClick = { importError = null; showImport = true }) {
+                    IconButton(onClick = { importError = null; importDirectories = emptyList(); showImport = true }) {
                         Icon(Icons.Default.FolderOpen, contentDescription = "Add existing local repository")
                     }
                 },
@@ -205,6 +207,7 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
     if (showLocal) {
         LocalRepositoryDialog(
             onDismiss = { showLocal = false },
+            nameConflict = { container.localRepositoryNameExists(it) },
             onCreate = { name ->
                 showLocal = false
                 container.createLocalRepository(name)
@@ -221,9 +224,15 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
         )
     }
 
+    LaunchedEffect(showImport) {
+        if (showImport) {
+            importDirectories = container.localRepositoryDirectories()
+        }
+    }
+
     if (showImport) {
         ImportDialog(
-            directories = container.localRepositoryDirectories(),
+            directories = importDirectories,
             error = importError,
             onDismiss = { showImport = false },
             onSelect = { directory ->
@@ -311,9 +320,14 @@ private fun ImportDialog(
 }
 
 @Composable
-private fun LocalRepositoryDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+private fun LocalRepositoryDialog(
+    onDismiss: () -> Unit,
+    nameConflict: (String) -> Boolean,
+    onCreate: (String) -> Unit,
+) {
     var name by remember { mutableStateOf("") }
     val valid = validLocalRepositoryName(name)
+    val conflict = nameConflict(name)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New local repository") },
@@ -324,7 +338,10 @@ private fun LocalRepositoryDialog(onDismiss: () -> Unit, onCreate: (String) -> U
                     onValueChange = { name = it },
                     label = { Text("Repository name") },
                     supportingText = {
-                        if (name.isNotBlank() && !valid) Text("Use 1-64 characters without / or \\")
+                        when {
+                            name.isNotBlank() && !valid -> Text("Use 1-64 characters without / or \\")
+                            conflict -> Text("A directory with this name already exists")
+                        }
                     },
                     singleLine = true,
                 )
@@ -335,7 +352,7 @@ private fun LocalRepositoryDialog(onDismiss: () -> Unit, onCreate: (String) -> U
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(name.trim()) }, enabled = valid) { Text("Create") }
+            TextButton(onClick = { onCreate(name.trim()) }, enabled = valid && !conflict) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

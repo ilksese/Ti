@@ -110,6 +110,16 @@ class TiDaoTest {
     }
 
     @Test
+    fun localPathIsUnique() = runBlocking {
+        dao.saveRepository(repository("one", 1))
+
+        val duplicate = repository("two", 2).copy(localPath = "/tmp/one")
+        val error = runCatching { dao.saveRepository(duplicate) }.exceptionOrNull()
+
+        assertTrue("expected localPath uniqueness", error != null)
+    }
+
+    @Test
     fun providersAreSortedCaseInsensitively() = runBlocking {
         dao.saveProvider(provider("p1", "zeta"))
         dao.saveProvider(provider("p2", "Alpha"))
