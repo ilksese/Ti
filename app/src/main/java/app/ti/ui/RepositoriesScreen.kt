@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,18 +44,21 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import app.ti.AppContainer
+import app.ti.validLocalRepositoryName
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
     val repositories by container.dao.observeRepositories().collectAsStateWithLifecycle(emptyList())
+    var showActions by remember { mutableStateOf(false) }
     var showClone by remember { mutableStateOf(false) }
+    var showLocal by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Repositories") }) },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showClone = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Clone repository")
+            FloatingActionButton(onClick = { showActions = true }) {
+                Icon(Icons.Default.Add, contentDescription = "Add repository")
             }
         },
     ) { padding ->
@@ -100,6 +104,35 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
         }
     }
 
+    if (showActions) {
+        AlertDialog(
+            onDismissRequest = { showActions = false },
+            title = { Text("Add repository") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { showActions = false; showLocal = true },
+                    ) { Text("New local repository") }
+                    HorizontalDivider()
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { showActions = false; showClone = true },
+                    ) { Text("Clone remote repository") }
+                }
+            },
+            confirmButton = {},
+        )
+    }
+    if (showLocal) {
+        LocalRepositoryDialog(
+            onDismiss = { showLocal = false },
+            onCreate = { name ->
+                showLocal = false
+                container.createLocalRepository(name)
+            },
+        )
+    }
     if (showClone) {
         CloneDialog(
             onDismiss = { showClone = false },
@@ -109,6 +142,37 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             },
         )
     }
+}
+
+@Composable
+private fun LocalRepositoryDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    val valid = validLocalRepositoryName(name)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New local repository") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Repository name") },
+                    supportingText = {
+                        if (name.isNotBlank() && !valid) Text("Use 1-64 characters without / or \\")
+                    },
+                    singleLine = true,
+                )
+                Text(
+                    "The repository will be created in the app's private repositories folder.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onCreate(name.trim()) }, enabled = valid) { Text("Create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

@@ -20,6 +20,15 @@ import java.io.File
 import java.net.URI
 
 class GitService {
+    /** Initializes a new repository in an empty directory. */
+    suspend fun init(directory: File) = withContext(Dispatchers.IO) {
+        require(!directory.exists() || directory.listFiles().isNullOrEmpty()) {
+            "Repository directory must be empty"
+        }
+        directory.mkdirs()
+        Git.init().setDirectory(directory).call().close()
+    }
+
     suspend fun clone(
         url: String,
         directory: File,

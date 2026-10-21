@@ -5,6 +5,9 @@ import app.ti.agent.AgentRunManager
 import app.ti.agent.RepoFiles
 import app.ti.data.ModelEntity
 import app.ti.data.RepositoryEntity
+import app.ti.data.RepositorySource
+import app.ti.data.RepositoryStatus
+import app.ti.data.RepositoryStorageType
 import app.ti.data.SettingEntity
 import app.ti.data.TiDatabase
 import app.ti.git.GitService
@@ -90,6 +93,50 @@ class AppContainer(context: Context) {
         job.start()
     }
 
+    /** Creates a new app-private repository and initializes it with JGit. */
+    fun createLocalRepository(name: String) {
+        val normalized = name.trim()
+        require(validLocalRepositoryName(normalized)) { "Invalid repository name" }
+        val id = UUID.randomUUID().toString()
+        val directory = File(repositoryRoot, normalized)
+        val repo = RepositoryEntity(
+            id = id,
+            name = normalized,
+            remoteUrl = null,
+            localPath = directory.path,
+            username = "",
+            token = "",
+            createdAt = System.currentTimeMillis(),
+            status = RepositoryStatus.CREATING,
+            progress = "Creating repository",
+            source = RepositorySource.LOCAL,
+            storageType = RepositoryStorageType.APP_PRIVATE,
+        )
+        val job = scope.launch {
+            dao.saveRepository(repo)
+            var createdDirectory = false
+            try {
+                if (directory.exists()) throw IllegalStateException("A directory with this name already exists")
+                repositoryRoot.mkdirs()
+                createdDirectory = true
+                dao.updateRepositoryClone(id, RepositoryStatus.CREATING, "Initializing Git")
+                git.init(directory)
+                coroutineContext.ensureActive()
+                dao.updateRepositoryClone(id, RepositoryStatus.READY, "")
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                dao.updateRepositoryClone(id, RepositoryStatus.FAILED, error.message ?: "Repository creation failed")
+                // Never remove a pre-existing directory; only clean up our empty directory.
+                if (createdDirectory && directory.listFiles().isNullOrEmpty()) {
+                    withContext(Dispatchers.IO) { directory.deleteRecursively() }
+                }
+            }
+        }
+        cloneJobs[id] = job
+        job.invokeOnCompletion { cloneJobs.remove(id) }
+    }
+
     fun deleteRepository(repo: RepositoryEntity) {
         val cloneJob = cloneJobs.remove(repo.id)
         scope.launch {
@@ -132,6 +179,13 @@ class AppContainer(context: Context) {
             )
         }
     }
+}
+
+/** Android-safe directory name validation for app-private local repositories. */
+fun validLocalRepositoryName(name: String): Boolean {
+    val value = name.trim()
+    return value.isNotEmpty() && value.length <= 64 && value != "." && value != ".." &&
+        value.none { it == '/' || it == '\\' || it.isISOControl() }
 }
 
 private const val MODEL_AUTO_COMPLETE = "ai_model_autocomplete"
