@@ -345,15 +345,31 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
                         "FOREIGN KEY(`modelId`) REFERENCES `models`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
                 )
                 db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `messages_new` (`id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, " +
+                        "`role` TEXT NOT NULL, `content` TEXT NOT NULL, `name` TEXT, `toolCallId` TEXT, " +
+                        "`toolCallsJson` TEXT, `status` TEXT NOT NULL, `compacted` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
+                        "FOREIGN KEY(`sessionId`) REFERENCES `sessions_new`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                )
+                db.execSQL(
                     "INSERT INTO `sessions_new` (`id`, `repositoryId`, `modelId`, `title`, `titleGenerated`, " +
                         "`status`, `summary`, `summaryThroughAt`, `createdAt`, `updatedAt`) " +
                         "SELECT `id`, `repositoryId`, `modelId`, `title`, `titleGenerated`, `status`, `summary`, " +
                         "`summaryThroughAt`, `createdAt`, `updatedAt` FROM `sessions`",
                 )
+                db.execSQL(
+                    "INSERT INTO `messages_new` (`id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, `toolCallsJson`, " +
+                        "`status`, `compacted`, `createdAt`) SELECT `id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, " +
+                        "`toolCallsJson`, `status`, `compacted`, `createdAt` FROM `messages`",
+                )
+                db.execSQL("DROP TABLE `messages`")
                 db.execSQL("DROP TABLE `sessions`")
                 db.execSQL("ALTER TABLE `sessions_new` RENAME TO `sessions`")
+                db.execSQL("ALTER TABLE `messages_new` RENAME TO `messages`")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_repositoryId` ON `sessions` (`repositoryId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_modelId` ON `sessions` (`modelId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_sessionId` ON `messages` (`sessionId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_toolCallId` ON `messages` (`toolCallId`)")
             }
         }
 

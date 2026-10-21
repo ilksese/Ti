@@ -59,6 +59,7 @@ class TiDatabaseMigrationTest {
                 assertFalse(dao.session("s1")!!.titleGenerated)
                 assertEquals("r1", dao.session("s1")!!.repositoryId)
                 assertEquals(listOf("msg1"), dao.messages("s1").map { it.id })
+                assertEquals("hi", dao.messages("s1").single().content)
 
                 // The migration must preserve the dependency chain and keep its
                 // repository -> session -> message cascade valid.
