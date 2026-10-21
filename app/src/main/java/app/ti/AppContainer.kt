@@ -116,7 +116,11 @@ class AppContainer(context: Context) {
     /** Adds an existing directory, optionally initializing Git after explicit user confirmation. */
     fun importLocalRepository(directory: File, initialize: Boolean) {
         scope.launch {
-            val canonical = runCatching { validateLocalRepositoryDirectory(directory) }.getOrElse { return@launch }
+            val canonical = try {
+                validateLocalRepositoryDirectory(directory)
+            } catch (_: Throwable) {
+                return@launch
+            }
             val existing = withContext(Dispatchers.IO) {
                 dao.repositories().firstOrNull { runCatching { File(it.localPath).canonicalFile == canonical }.getOrDefault(false) }
             }
