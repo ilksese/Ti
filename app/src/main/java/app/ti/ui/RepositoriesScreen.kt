@@ -77,7 +77,7 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
                                 when (repo.status) {
                                     "cloning" -> repo.progress.ifBlank { "Loading..." }
                                     "failed" -> "Clone failed: ${repo.progress}"
-                                    else -> repo.remoteUrl
+                                    else -> repo.remoteUrl ?: repo.localPath
                                 },
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,

@@ -87,6 +87,29 @@ class TiDaoTest {
     }
 
     @Test
+    fun localRepositoryPersistsWithoutRemoteUrl() = runBlocking {
+        val local = repository("local", 1).copy(
+            remoteUrl = null,
+            localPath = "/data/local",
+            status = RepositoryStatus.MISSING,
+            progress = "Directory is missing",
+            source = RepositorySource.LOCAL,
+            storageType = RepositoryStorageType.APP_PRIVATE,
+        )
+        dao.saveRepository(local)
+
+        val restored = dao.repository("local")!!
+        assertNull(restored.remoteUrl)
+        assertEquals(RepositorySource.LOCAL, restored.source)
+        assertEquals(RepositoryStorageType.APP_PRIVATE, restored.storageType)
+        assertEquals(RepositoryStatus.MISSING, restored.status)
+        assertEquals("Directory is missing", restored.progress)
+
+        dao.updateRepositoryClone("local", RepositoryStatus.READY, "")
+        assertEquals(RepositoryStatus.READY, dao.repository("local")!!.status)
+    }
+
+    @Test
     fun providersAreSortedCaseInsensitively() = runBlocking {
         dao.saveProvider(provider("p1", "zeta"))
         dao.saveProvider(provider("p2", "Alpha"))

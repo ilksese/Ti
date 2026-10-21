@@ -25,7 +25,7 @@ class TiDatabaseMigrationTest {
     }
 
     @Test
-    fun migratingFromVersion1To5ProducesValidSchemaAndKeepsData() {
+    fun migratingFromVersion1To7ProducesValidSchemaAndKeepsData() {
         context.deleteDatabase(dbName)
         createVersion1Database()
 
@@ -35,6 +35,8 @@ class TiDatabaseMigrationTest {
                 TiDatabase.MIGRATION_2_3,
                 TiDatabase.MIGRATION_3_4,
                 TiDatabase.MIGRATION_4_5,
+                TiDatabase.MIGRATION_5_6,
+                TiDatabase.MIGRATION_6_7,
             )
             .build()
 
@@ -45,6 +47,9 @@ class TiDatabaseMigrationTest {
 
                 assertEquals(listOf("r1"), dao.repositories().map { it.id })
                 assertEquals("ready", dao.repository("r1")!!.status)
+                assertEquals("https://github.com/acme/repo.git", dao.repository("r1")!!.remoteUrl)
+                assertEquals(RepositorySource.REMOTE, dao.repository("r1")!!.source)
+                assertEquals(RepositoryStorageType.APP_PRIVATE, dao.repository("r1")!!.storageType)
                 assertEquals("seamaid", dao.provider("p1")!!.name)
                 assertEquals(200_000, dao.model("m1")!!.contextTokens)
                 assertNull(dao.model("m1")!!.reasoningMode)

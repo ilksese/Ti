@@ -37,9 +37,10 @@ class GitService {
     }
 
     suspend fun configureRemote(repo: RepositoryEntity, proxy: String) = withGit(repo) { git ->
+        val remoteUrl = requireNotNull(repo.remoteUrl) { "Local repositories do not have a remote URL" }
         git.repository.config.apply {
-            setString("remote", "origin", "url", gitProxyUrl(repo.remoteUrl, proxy))
-            setString("remote", "origin", "pushurl", repo.remoteUrl)
+            setString("remote", "origin", "url", gitProxyUrl(remoteUrl, proxy))
+            setString("remote", "origin", "pushurl", remoteUrl)
             save()
         }
     }

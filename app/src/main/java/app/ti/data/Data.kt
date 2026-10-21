@@ -21,14 +21,42 @@ import kotlinx.coroutines.flow.Flow
 data class RepositoryEntity(
     @PrimaryKey val id: String,
     val name: String,
-    val remoteUrl: String,
+    /** Null for repositories that were created/imported locally. */
+    val remoteUrl: String?,
     val localPath: String,
     val username: String,
     val token: String,
     val createdAt: Long,
     val status: String = "ready",
     val progress: String = "",
+    /** Identifies whether this repository was cloned from a remote or created locally. */
+    val source: String = RepositorySource.REMOTE,
+    /** Identifies how the local path is persisted; URI storage is reserved for SAF support. */
+    val storageType: String = RepositoryStorageType.APP_PRIVATE,
 )
+
+/** Persisted repository source values. Keep these stable for Room migrations. */
+object RepositorySource {
+    const val REMOTE = "remote"
+    const val LOCAL = "local"
+}
+
+/** Persisted storage values. `SHARED_URI` is reserved for a future SAF integration. */
+object RepositoryStorageType {
+    const val APP_PRIVATE = "app_private"
+    const val SHARED_URI = "shared_uri"
+}
+
+/** Persisted repository lifecycle values used by background creation and recovery. */
+object RepositoryStatus {
+    const val CREATING = "creating"
+    const val CLONING = "cloning"
+    const val READY = "ready"
+    const val PERMISSION_REQUIRED = "permission_required"
+    const val INVALID = "invalid_repository"
+    const val MISSING = "directory_missing"
+    const val FAILED = "failed"
+}
 
 @Entity(tableName = "providers")
 data class ProviderEntity(
@@ -275,7 +303,7 @@ interface TiDao {
         MessageEntity::class,
         SettingEntity::class,
     ],
-version = 5,
+    version = 7,
     exportSchema = false,
 )
 abstract class TiDatabase : RoomDatabase() {
@@ -329,9 +357,40 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
             }
         }
 
+        /** Make the remote optional while retaining every existing repository row. */
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `repositories_new` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`remoteUrl` TEXT, `localPath` TEXT NOT NULL, `username` TEXT NOT NULL, `token` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `progress` TEXT NOT NULL, PRIMARY KEY(`id`))",
+                )
+                db.execSQL(
+                    "INSERT INTO `repositories_new` (`id`, `name`, `remoteUrl`, `localPath`, `username`, `token`, `createdAt`, `status`, `progress`) " +
+                        "SELECT `id`, `name`, `remoteUrl`, `localPath`, `username`, `token`, `createdAt`, `status`, `progress` FROM `repositories`",
+                )
+                db.execSQL("DROP TABLE `repositories`")
+                db.execSQL("ALTER TABLE `repositories_new` RENAME TO `repositories`")
+            }
+        }
+
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE repositories ADD COLUMN source TEXT NOT NULL DEFAULT 'remote'")
+                db.execSQL("ALTER TABLE repositories ADD COLUMN storageType TEXT NOT NULL DEFAULT 'app_private'")
+            }
+        }
+
         fun create(context: Context): TiDatabase =
             Room.databaseBuilder(context, TiDatabase::class.java, "ti.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                    MIGRATION_6_7,
+                )
                 .build()
     }
 }
