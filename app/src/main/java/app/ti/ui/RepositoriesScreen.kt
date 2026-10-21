@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import app.ti.AppContainer
+import app.ti.data.RepositoryEntity
 
 import app.ti.validLocalRepositoryName
 
@@ -68,6 +69,8 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
     var showImport by remember { mutableStateOf(false) }
     var confirmInitialize by remember { mutableStateOf<File?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
+    var repositoryActions by remember { mutableStateOf<RepositoryEntity?>(null) }
+    var confirmDeleteFiles by remember { mutableStateOf<RepositoryEntity?>(null) }
     val scope = rememberCoroutineScope()
 
 
@@ -119,16 +122,58 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
                             else Icon(Icons.Default.Folder, contentDescription = null)
                         },
                         trailingContent = {
-                            if (!ready) {
-                                IconButton(onClick = { container.deleteRepository(repo) }) {
-                                    Icon(Icons.Default.Delete, "Delete repository")
-                                }
+                            IconButton(onClick = { repositoryActions = repo }) {
+                                Icon(Icons.Default.Delete, "Repository actions")
                             }
                         },
                     )
                 }
             }
         }
+    }
+
+    repositoryActions?.let { repo ->
+        AlertDialog(
+            onDismissRequest = { repositoryActions = null },
+            title = { Text("Repository actions") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Removing a repository only removes it from this list.", style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            repositoryActions = null
+                            container.removeRepository(repo)
+                        },
+                    ) { Text("Remove from list") }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            repositoryActions = null
+                            confirmDeleteFiles = repo
+                        },
+                    ) { Text("Delete local files") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { repositoryActions = null }) { Text("Cancel") } },
+        )
+    }
+
+    confirmDeleteFiles?.let { repo ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteFiles = null },
+            title = { Text("Delete local files?") },
+            text = {
+                Text("This permanently deletes the files at ${repo.localPath}. The repository record will remain and be marked missing.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDeleteFiles = null
+                    container.deleteRepositoryFiles(repo)
+                }) { Text("Delete files") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteFiles = null }) { Text("Cancel") } },
+        )
     }
 
     if (showActions) {

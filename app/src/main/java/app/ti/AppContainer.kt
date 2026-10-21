@@ -206,14 +206,42 @@ class AppContainer(context: Context) {
 
     }
 
-    fun deleteRepository(repo: RepositoryEntity) {
-        val cloneJob = cloneJobs.remove(repo.id)
+    /** Removes a repository from the list without touching its files. */
+    fun removeRepository(repo: RepositoryEntity) {
+        val job = cloneJobs.remove(repo.id)
         scope.launch {
+            job?.cancelAndJoin()
             dao.deleteRepository(repo)
-            cloneJob?.cancelAndJoin()
-            withContext(Dispatchers.IO) { File(repo.localPath).deleteRecursively() }
         }
     }
+
+    /**
+     * Deletes the repository directory while retaining its record as missing.
+     * Keeping the record lets users remove it from the list separately and makes
+     * the destructive action explicit in the UI.
+     */
+    fun deleteRepositoryFiles(repo: RepositoryEntity) {
+        val job = cloneJobs.remove(repo.id)
+        scope.launch {
+            try {
+                job?.cancelAndJoin()
+                withContext(Dispatchers.IO) {
+                    val root = repositoryRoot.canonicalFile
+                    val directory = File(repo.localPath).canonicalFile
+                    require(isSafeRepositoryPath(root, directory)) { "Repository path is outside the app repository root" }
+                    if (directory.exists()) {
+                        check(directory.deleteRecursively()) { "Unable to delete repository files" }
+                    }
+                }
+                dao.updateRepositoryClone(repo.id, RepositoryStatus.MISSING, "Local files deleted")
+            } catch (error: Throwable) {
+                dao.updateRepositoryClone(repo.id, RepositoryStatus.FAILED, error.message ?: "Unable to delete repository files")
+            }
+        }
+    }
+
+    /** Compatibility alias for callers that used the old destructive operation. */
+    fun deleteRepository(repo: RepositoryEntity) = removeRepository(repo)
 
     suspend fun enrichProvider(providerId: String) {
         if (dao.setting(MODEL_AUTO_COMPLETE)?.value != "true") return
@@ -264,6 +292,9 @@ data class LocalRepositoryInspection(
     val isGitRepository: Boolean,
     val duplicate: RepositoryEntity?,
 )
+
+internal fun isSafeRepositoryPath(root: File, directory: File): Boolean =
+    directory != root && directory.parentFile == root
 
 
 private const val MODEL_AUTO_COMPLETE = "ai_model_autocomplete"
