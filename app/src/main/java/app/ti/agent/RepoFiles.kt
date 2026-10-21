@@ -208,7 +208,9 @@ class RepoFiles {
     private fun resolve(repo: RepositoryEntity, value: String, allowMissing: Boolean = false): Path {
         val root = root(repo)
         val relative = Paths.get(value.ifBlank { "." })
-        require(!relative.isAbsolute) { "Absolute paths are not allowed" }
+        // POSIX Path does not recognize Windows drive or UNC paths as absolute.
+        val windowsAbsolute = WINDOWS_ABSOLUTE_PATH.containsMatchIn(value)
+        require(!relative.isAbsolute && !windowsAbsolute) { "Absolute paths are not allowed" }
         require(relative.none { it.toString() == ".git" }) { "Access to .git is not allowed" }
         val target = root.resolve(relative).normalize()
         require(target.startsWith(root)) { "Path escapes the repository" }
@@ -226,4 +228,8 @@ class RepoFiles {
     private fun strictUtf8() = StandardCharsets.UTF_8.newDecoder()
         .onMalformedInput(CodingErrorAction.REPORT)
         .onUnmappableCharacter(CodingErrorAction.REPORT)
+
+    private companion object {
+        val WINDOWS_ABSOLUTE_PATH = Regex("""^(?:[A-Za-z]:[\\/]|\\\\)""")
+    }
 }
