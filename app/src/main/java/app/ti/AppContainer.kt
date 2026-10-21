@@ -136,6 +136,7 @@ class AppContainer(context: Context) {
         }
         cloneJobs[id] = job
         job.invokeOnCompletion { cloneJobs.remove(id) }
+    }
 
 
     /** Lists importable repositories without leaving the app-private repository root. */
