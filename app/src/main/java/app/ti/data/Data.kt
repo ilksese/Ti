@@ -17,7 +17,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
-@Entity(tableName = "repositories")
+@Entity(tableName = "repositories", indices = [Index(value = ["localPath"], unique = true)])
 data class RepositoryEntity(
     @PrimaryKey val id: String,
     val name: String,
@@ -303,7 +303,7 @@ interface TiDao {
         MessageEntity::class,
         SettingEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class TiDatabase : RoomDatabase() {
@@ -420,6 +420,12 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
             }
         }
 
+        internal val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_repositories_localPath` ON `repositories` (`localPath`)")
+            }
+        }
+
         fun create(context: Context): TiDatabase =
             Room.databaseBuilder(context, TiDatabase::class.java, "ti.db")
                 .addMigrations(
@@ -429,6 +435,7 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
                     MIGRATION_4_5,
                     MIGRATION_5_6,
                     MIGRATION_6_7,
+                    MIGRATION_7_8,
                 )
                 .build()
     }

@@ -26,6 +26,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -42,6 +44,7 @@ class AppContainer(context: Context) {
     private val modelsDev = ModelsDevClient(File(context.filesDir, "models-dev-cache.json"))
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val cloneJobs = ConcurrentHashMap<String, Job>()
+    private val localRepositoryMutex = Mutex()
     val agents = AgentRunManager(dao, llm, files, git, scope)
 
     init {
@@ -166,23 +169,25 @@ class AppContainer(context: Context) {
             storageType = RepositoryStorageType.APP_PRIVATE,
         )
         val job = scope.launch {
-            dao.saveRepository(repo)
-            var createdDirectory = false
-            try {
-                if (directory.exists()) throw IllegalStateException("A directory with this name already exists")
-                repositoryRoot.mkdirs()
-                createdDirectory = true
-                dao.updateRepositoryClone(id, RepositoryStatus.CREATING, "Initializing Git")
-                git.init(directory)
-                coroutineContext.ensureActive()
-                dao.updateRepositoryClone(id, RepositoryStatus.READY, "")
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                dao.updateRepositoryClone(id, RepositoryStatus.FAILED, error.message ?: "Repository creation failed")
-                // Never remove a pre-existing directory; only clean up our empty directory.
-                if (createdDirectory && directory.listFiles().isNullOrEmpty()) {
-                    withContext(Dispatchers.IO) { directory.deleteRecursively() }
+            localRepositoryMutex.withLock {
+                // Re-check under a process-wide lock so two submissions cannot race.
+                if (directory.exists()) return@withLock
+                dao.saveRepository(repo)
+                var createdDirectory = false
+                try {
+                    repositoryRoot.mkdirs()
+                    if (!directory.mkdir()) throw IllegalStateException("A directory with this name already exists")
+                    createdDirectory = true
+                    dao.updateRepositoryClone(id, RepositoryStatus.CREATING, "Initializing Git")
+                    git.init(directory)
+                    coroutineContext.ensureActive()
+                    dao.updateRepositoryClone(id, RepositoryStatus.READY, "")
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    dao.updateRepositoryClone(id, RepositoryStatus.FAILED, error.message ?: "Repository creation failed")
+                    // The directory was created by this operation, so partial JGit output is safe to remove.
+                    if (createdDirectory) withContext(Dispatchers.IO) { directory.deleteRecursively() }
                 }
             }
         }
@@ -192,11 +197,17 @@ class AppContainer(context: Context) {
 
 
     /** Lists importable repositories without leaving the app-private repository root. */
-    fun localRepositoryDirectories(): List<File> = repositoryRoot
-        .listFiles()
-        ?.filter { it.isDirectory }
-        ?.sortedBy { it.name.lowercase() }
-        .orEmpty()
+    suspend fun localRepositoryDirectories(): List<File> = withContext(Dispatchers.IO) {
+        repositoryRoot
+            .listFiles()
+            ?.filter { it.isDirectory }
+            ?.sortedBy { it.name.lowercase() }
+            .orEmpty()
+    }
+
+    /** Checks a name without scanning the repository root; used for immediate form validation. */
+    fun localRepositoryNameExists(name: String): Boolean =
+        validLocalRepositoryName(name) && File(repositoryRoot, name.trim()).exists()
 
     /** Inspects a direct child of the app-private repository root before importing it. */
     suspend fun inspectLocalRepository(directory: File): LocalRepositoryInspection = withContext(Dispatchers.IO) {
@@ -219,11 +230,6 @@ class AppContainer(context: Context) {
             } catch (_: Throwable) {
                 return@launch
             }
-            val existing = withContext(Dispatchers.IO) {
-                dao.repositories().firstOrNull { runCatching { File(it.localPath).canonicalFile == canonical }.getOrDefault(false) }
-            }
-            if (existing != null) return@launch
-
             val id = UUID.randomUUID().toString()
             val repo = RepositoryEntity(
                 id = id,
@@ -238,7 +244,16 @@ class AppContainer(context: Context) {
                 source = RepositorySource.LOCAL,
                 storageType = RepositoryStorageType.APP_PRIVATE,
             )
-            dao.saveRepository(repo)
+            val inserted = localRepositoryMutex.withLock {
+                val existing = withContext(Dispatchers.IO) {
+                    dao.repositories().firstOrNull { runCatching { File(it.localPath).canonicalFile == canonical }.getOrDefault(false) }
+                }
+                if (existing != null) false else {
+                    dao.saveRepository(repo)
+                    true
+                }
+            }
+            if (!inserted) return@launch
             try {
                 if (initialize) git.initialize(canonical)
                 check(git.isRepository(canonical)) { "Directory is not a Git repository" }
