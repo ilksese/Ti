@@ -4,13 +4,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -55,42 +58,43 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            if (repositories.isEmpty()) EmptyState("No repositories")
-            LazyColumn(contentPadding = PaddingValues(bottom = 88.dp)) {
-                items(repositories, key = { it.id }) { repo ->
-                    val ready = repo.status == "ready"
-                    Card(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
-                            .clickable(enabled = ready) { nav.navigate("repo/${repo.id}") },
-                        shape = RoundedCornerShape(6.dp),
-                    ) {
-                        ListItem(
-                            headlineContent = { Text(repo.name) },
-                            supportingContent = {
-                                Text(
-                                    when (repo.status) {
-                                        "cloning" -> repo.progress.ifBlank { "Loading..." }
-                                        "failed" -> "Clone failed: ${repo.progress}"
-                                        else -> repo.remoteUrl
-                                    },
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            leadingContent = {
-                                if (repo.status == "cloning") CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                                else Icon(Icons.Default.Folder, contentDescription = null)
-                            },
-                            trailingContent = {
-                                if (!ready) {
-                                    IconButton(onClick = { container.deleteRepository(repo) }) {
-                                        Icon(Icons.Default.Delete, "Delete repository")
-                                    }
+        if (repositories.isEmpty()) EmptyState("No repositories", Modifier.padding(padding).consumeWindowInsets(padding))
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding + PaddingValues(bottom = 88.dp),
+        ) {
+            items(repositories, key = { it.id }) { repo ->
+                val ready = repo.status == "ready"
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+                        .clickable(enabled = ready) { nav.navigate("repo/${repo.id}") },
+                    shape = RoundedCornerShape(6.dp),
+                ) {
+                    ListItem(
+                        headlineContent = { Text(repo.name) },
+                        supportingContent = {
+                            Text(
+                                when (repo.status) {
+                                    "cloning" -> repo.progress.ifBlank { "Loading..." }
+                                    "failed" -> "Clone failed: ${repo.progress}"
+                                    else -> repo.remoteUrl
+                                },
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        leadingContent = {
+                            if (repo.status == "cloning") CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Default.Folder, contentDescription = null)
+                        },
+                        trailingContent = {
+                            if (!ready) {
+                                IconButton(onClick = { container.deleteRepository(repo) }) {
+                                    Icon(Icons.Default.Delete, "Delete repository")
                                 }
-                            },
-                        )
-                    }
+                            }
+                        },
+                    )
                 }
             }
         }
@@ -115,7 +119,7 @@ private fun CloneDialog(onDismiss: () -> Unit, onClone: (String, String) -> Unit
         onDismissRequest = onDismiss,
         title = { Text("Clone repository") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text("Name (optional)") }, singleLine = true)
                 OutlinedTextField(url, { url = it }, label = { Text("HTTPS URL") }, singleLine = true)
                 Text("Authentication and GitHub proxy use the global Git settings.", style = MaterialTheme.typography.bodySmall)

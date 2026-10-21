@@ -7,10 +7,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -110,7 +111,10 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
     ) { padding ->
         val value = repo
         if (value == null) return@Scaffold
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 88.dp)) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding + PaddingValues(bottom = 88.dp),
+        ) {
             item {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { refresh(value) }, enabled = !busy) { Icon(Icons.Default.Refresh, null); Text("Status") }
@@ -207,7 +211,7 @@ private fun BranchDialog(container: AppContainer, repo: RepositoryEntity, onDism
         onDismissRequest = onDismiss,
         title = { Text("Branches") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(name, { name = it }, label = { Text("New branch") }, modifier = Modifier.weight(1f), singleLine = true)
                     IconButton(onClick = { action { container.git.createBranch(repo, name.trim()) } }, enabled = name.isNotBlank() && !busy) { Icon(Icons.Default.Add, "Create") }
@@ -254,7 +258,7 @@ internal fun ModelPickerDialog(models: List<ModelEntity>, providers: List<Provid
                     },
                 )
                 if (filtered.isEmpty()) InfoText("No matching models")
-                LazyColumn(Modifier.fillMaxWidth().height(360.dp)) {
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp).weight(1f, fill = false)) {
                     items(filtered, key = { it.id }) { model ->
                         val provider = providers.firstOrNull { it.id == model.providerId }
                         ListItem(

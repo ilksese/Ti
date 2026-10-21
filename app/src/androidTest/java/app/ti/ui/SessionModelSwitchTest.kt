@@ -136,11 +136,11 @@ class SessionModelSwitchTest {
             rule.onAllNodesWithText("aaa-beta-model").fetchSemanticsNodes().isNotEmpty()
         }
 
-        // the top bar subtitle always shows the current model, so a filtered list leaves exactly one match
+        // Match model rows independently of the app bar, which can hide in compact editing layouts.
         rule.onNodeWithText("Search models").performTextInput("beta")
         rule.waitUntil(timeoutMillis = 15_000) {
-            rule.onAllNodesWithText("aaa-alpha-model").fetchSemanticsNodes().size == 1 &&
-                rule.onAllNodesWithText("aaa-beta-model").fetchSemanticsNodes().isNotEmpty()
+            rule.onAllNodes(hasText("aaa-alpha-model") and hasClickAction()).fetchSemanticsNodes().isEmpty() &&
+                rule.onAllNodes(hasText("aaa-beta-model") and hasClickAction()).fetchSemanticsNodes().isNotEmpty()
         }
     }
 
