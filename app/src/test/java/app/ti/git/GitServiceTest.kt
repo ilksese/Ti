@@ -92,6 +92,17 @@ class GitServiceTest {
     }
 
     @Test
+    fun initializeExistingDirectoryPreservesUserFiles() = run {
+        val directory = temp.newFolder("existing")
+        val source = File(directory, "README.md").apply { writeText("keep me") }
+
+        git.initialize(directory)
+
+        assertTrue(git.isRepository(directory))
+        assertEquals("keep me", source.readText())
+    }
+
+    @Test
     fun statusReportsCleanUntrackedModifiedAndMissing() = run {
         initRepo()
         assertEquals("Working tree clean", git.status(repo))

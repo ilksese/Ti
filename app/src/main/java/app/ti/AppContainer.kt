@@ -61,28 +61,26 @@ class AppContainer(context: Context) {
             val directory = File(repo.localPath)
             try {
                 if (!directory.exists() || !directory.isDirectory) {
-                    dao.updateRepositoryClone(repo.id, RepositoryStatus.MISSING, "Directory is missing")
+                    val result = repositoryRecoveryResult(repo.status, exists = false, isDirectory = false, isGitRepository = false)
+                    result?.let { dao.updateRepositoryClone(repo.id, it.status, it.progress) }
                     return@forEach
                 }
-                val validGit = git.isRepository(directory)
-                when (repo.status) {
-                    RepositoryStatus.CREATING, RepositoryStatus.CLONING -> {
-                        if (validGit) {
-                            dao.updateRepositoryClone(repo.id, RepositoryStatus.READY, "")
-                        } else {
-                            dao.updateRepositoryClone(
-                                repo.id,
-                                RepositoryStatus.FAILED,
-                                "Operation interrupted; tap Retry to check again",
-                            )
-                        }
-                    }
-                    RepositoryStatus.READY -> if (!validGit) {
-                        dao.updateRepositoryClone(repo.id, RepositoryStatus.INVALID, "Directory is not a Git repository")
-                    }
-                }
+                val result = repositoryRecoveryResult(
+                    repo.status,
+                    exists = true,
+                    isDirectory = true,
+                    isGitRepository = git.isRepository(directory),
+                )
+                result?.let { dao.updateRepositoryClone(repo.id, it.status, it.progress) }
             } catch (_: SecurityException) {
-                dao.updateRepositoryClone(repo.id, RepositoryStatus.PERMISSION_REQUIRED, "Permission required")
+                val result = repositoryRecoveryResult(
+                    repo.status,
+                    exists = true,
+                    isDirectory = true,
+                    isGitRepository = false,
+                    permissionDenied = true,
+                )
+                result?.let { dao.updateRepositoryClone(repo.id, it.status, it.progress) }
             }
         }
     }
@@ -349,6 +347,33 @@ data class LocalRepositoryInspection(
 
 internal fun isSafeRepositoryPath(root: File, directory: File): Boolean =
     directory != root && directory.parentFile == root
+
+internal data class RepositoryRecoveryResult(val status: String, val progress: String)
+
+/** Maps persisted repository state and on-disk checks to the state shown after restart. */
+internal fun repositoryRecoveryResult(
+    previousStatus: String,
+    exists: Boolean,
+    isDirectory: Boolean,
+    isGitRepository: Boolean,
+    permissionDenied: Boolean = false,
+): RepositoryRecoveryResult? {
+    if (permissionDenied) return RepositoryRecoveryResult(RepositoryStatus.PERMISSION_REQUIRED, "Permission required")
+    if (!exists || !isDirectory) return RepositoryRecoveryResult(RepositoryStatus.MISSING, "Directory is missing")
+    return when (previousStatus) {
+        RepositoryStatus.CREATING, RepositoryStatus.CLONING -> if (isGitRepository) {
+            RepositoryRecoveryResult(RepositoryStatus.READY, "")
+        } else {
+            RepositoryRecoveryResult(RepositoryStatus.FAILED, "Operation interrupted; tap Retry to check again")
+        }
+        RepositoryStatus.READY -> if (isGitRepository) {
+            null
+        } else {
+            RepositoryRecoveryResult(RepositoryStatus.INVALID, "Directory is not a Git repository")
+        }
+        else -> null
+    }
+}
 
 
 private const val MODEL_AUTO_COMPLETE = "ai_model_autocomplete"
