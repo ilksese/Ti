@@ -11,6 +11,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -57,6 +58,12 @@ class TiDatabaseMigrationTest {
                 assertFalse(dao.session("s1")!!.titleGenerated)
                 assertEquals("r1", dao.session("s1")!!.repositoryId)
                 assertEquals(listOf("msg1"), dao.messages("s1").map { it.id })
+
+                // The migration must preserve the dependency chain and keep its
+                // repository -> session -> message cascade valid.
+                dao.deleteRepository(dao.repository("r1")!!)
+                assertNull(dao.session("s1"))
+                assertTrue(dao.messages("s1").isEmpty())
 
                 dao.saveSession(
                     SessionEntity(

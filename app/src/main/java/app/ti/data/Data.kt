@@ -360,17 +360,56 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
         /** Make the remote optional while retaining every existing repository row. */
         internal val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
+                // `sessions` and `messages` both reference repositories (directly or
+                // indirectly). Rebuilding only the parent table would violate SQLite's
+                // foreign-key checks as soon as an existing session is present, so rebuild
+                // the dependency chain together and then restore the original indexes.
                 db.execSQL(
                     "CREATE TABLE IF NOT EXISTS `repositories_new` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, " +
                         "`remoteUrl` TEXT, `localPath` TEXT NOT NULL, `username` TEXT NOT NULL, `token` TEXT NOT NULL, " +
                         "`createdAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `progress` TEXT NOT NULL, PRIMARY KEY(`id`))",
                 )
                 db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sessions_new` (`id` TEXT NOT NULL, `repositoryId` TEXT, " +
+                        "`modelId` TEXT NOT NULL, `title` TEXT NOT NULL, `titleGenerated` INTEGER NOT NULL, " +
+                        "`status` TEXT NOT NULL, `summary` TEXT, `summaryThroughAt` INTEGER, `createdAt` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
+                        "FOREIGN KEY(`repositoryId`) REFERENCES `repositories_new`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, " +
+                        "FOREIGN KEY(`modelId`) REFERENCES `models`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `messages_new` (`id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, " +
+                        "`role` TEXT NOT NULL, `content` TEXT NOT NULL, `name` TEXT, `toolCallId` TEXT, " +
+                        "`toolCallsJson` TEXT, `status` TEXT NOT NULL, `compacted` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
+                        "FOREIGN KEY(`sessionId`) REFERENCES `sessions_new`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                )
+                db.execSQL(
                     "INSERT INTO `repositories_new` (`id`, `name`, `remoteUrl`, `localPath`, `username`, `token`, `createdAt`, `status`, `progress`) " +
                         "SELECT `id`, `name`, `remoteUrl`, `localPath`, `username`, `token`, `createdAt`, `status`, `progress` FROM `repositories`",
                 )
+                db.execSQL(
+                    "INSERT INTO `sessions_new` (`id`, `repositoryId`, `modelId`, `title`, `titleGenerated`, `status`, `summary`, " +
+                        "`summaryThroughAt`, `createdAt`, `updatedAt`) SELECT `id`, `repositoryId`, `modelId`, `title`, " +
+                        "`titleGenerated`, `status`, `summary`, `summaryThroughAt`, `createdAt`, `updatedAt` FROM `sessions`",
+                )
+                db.execSQL(
+                    "INSERT INTO `messages_new` (`id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, `toolCallsJson`, " +
+                        "`status`, `compacted`, `createdAt`) SELECT `id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, " +
+                        "`toolCallsJson`, `status`, `compacted`, `createdAt` FROM `messages`",
+                )
+                // Remove children before their referenced tables so foreign-key checks
+                // remain enabled throughout the migration.
+                db.execSQL("DROP TABLE `messages`")
+                db.execSQL("DROP TABLE `sessions`")
                 db.execSQL("DROP TABLE `repositories`")
                 db.execSQL("ALTER TABLE `repositories_new` RENAME TO `repositories`")
+                db.execSQL("ALTER TABLE `sessions_new` RENAME TO `sessions`")
+                db.execSQL("ALTER TABLE `messages_new` RENAME TO `messages`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_repositoryId` ON `sessions` (`repositoryId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_modelId` ON `sessions` (`modelId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_sessionId` ON `messages` (`sessionId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_toolCallId` ON `messages` (`toolCallId`)")
             }
         }
 
