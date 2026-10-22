@@ -46,8 +46,10 @@ class TiAppNavigationTest {
         rule.onNodeWithContentDescription("Add provider").assertIsDisplayed()
 
         rule.onNode(hasText("Repositories") and hasClickAction()).performClick()
-        awaitContentDescription("Clone repository")
-        rule.onNodeWithContentDescription("Clone repository").assertIsDisplayed()
+        awaitContentDescription("Add repository")
+        rule.onNodeWithContentDescription("Add repository").assertIsDisplayed().performClick()
+        rule.onNodeWithText("New local repository").assertIsDisplayed()
+        rule.onNodeWithText("Clone remote repository").assertIsDisplayed()
     }
 
     @Test

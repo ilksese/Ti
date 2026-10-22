@@ -103,6 +103,35 @@ class GitServiceTest {
     }
 
     @Test
+    fun recognizesOnlyTheSelectedRepositoryRoot() = run {
+        val directory = temp.newFolder("parent")
+        git.initialize(directory)
+        val child = File(directory, "child").apply { mkdir() }
+
+        assertTrue(git.isRepository(directory))
+        assertFalse(git.isRepository(child))
+        assertFalse(git.isRepository(File(directory, "missing")))
+    }
+
+    @Test
+    fun clonesLocalOriginWithoutNetworkAndPreservesRemoteConfiguration() = run {
+        initRepo()
+        write("README.md", "local origin\n")
+        commit("origin")
+        val target = File(temp.root, "cloned")
+
+        git.clone(dir.toURI().toString(), target, "", "")
+
+        assertEquals("local origin\n", File(target, "README.md").readText())
+        Git.open(target).use { handle ->
+            assertEquals("origin", handle.log().call().first().fullMessage)
+            val origin = java.net.URI(handle.repository.config.getString("remote", "origin", "url"))
+            assertEquals(dir.canonicalFile, File(origin).canonicalFile)
+            assertTrue(handle.status().call().isClean)
+        }
+    }
+
+    @Test
     fun statusReportsCleanUntrackedModifiedAndMissing() = run {
         initRepo()
         assertEquals("Working tree clean", git.status(repo))

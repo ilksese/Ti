@@ -65,10 +65,10 @@ class EdgeToEdgeTest {
     @Test
     fun rootTopBarDoesNotDoubleStatusInsetAndFabStaysAboveNavigation() {
         rule.waitUntil(timeoutMillis = 15_000) {
-            rule.onAllNodesWithContentDescription("Clone repository").fetchSemanticsNodes().isNotEmpty()
+            rule.onAllNodesWithContentDescription("Add repository").fetchSemanticsNodes().isNotEmpty()
         }
         val title = rule.onNode(hasText("Repositories") and !hasClickAction()).fetchSemanticsNode().boundsInWindow
-        val fab = rule.onNodeWithContentDescription("Clone repository").fetchSemanticsNode().boundsInWindow
+        val fab = rule.onNodeWithContentDescription("Add repository").fetchSemanticsNode().boundsInWindow
         val tab = rule.onNode(hasText("Settings") and hasClickAction()).fetchSemanticsNode().boundsInWindow
         val insets = rootInsets()
         val density = rule.activity.resources.displayMetrics.density
