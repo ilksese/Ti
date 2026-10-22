@@ -220,9 +220,17 @@ class AppContainer(
                     dao.updateRepositoryClone(id, RepositoryStatus.READY, "")
                     id
                 } catch (error: CancellationException) {
+                    withContext(NonCancellable) {
+                        dao.updateRepositoryClone(id, RepositoryStatus.FAILED, "Operation interrupted; tap Retry to check again")
+                        if (createdDirectory) {
+                            runCatching { cleanupNewRepositoryDirectory(directory) }
+                                .exceptionOrNull()?.let(error::addSuppressed)
+                        }
+                    }
                     throw error
                 } catch (error: Throwable) {
-                    dao.updateRepositoryClone(id, RepositoryStatus.FAILED, error.message ?: "Repository creation failed")
+                    val status = if (error is SecurityException) RepositoryStatus.PERMISSION_REQUIRED else RepositoryStatus.FAILED
+                    dao.updateRepositoryClone(id, status, error.message ?: "Repository creation failed")
                     // A file may have arrived after mkdir; only the initializer's Git output is owned.
                     if (createdDirectory) {
                         runCatching { cleanupNewRepositoryDirectory(directory) }
@@ -331,7 +339,8 @@ class AppContainer(
                 }
                 throw error
             } catch (error: Throwable) {
-                dao.updateRepositoryClone(id, RepositoryStatus.FAILED, error.message ?: "Import failed")
+                val status = if (error is SecurityException) RepositoryStatus.PERMISSION_REQUIRED else RepositoryStatus.FAILED
+                dao.updateRepositoryClone(id, status, error.message ?: "Import failed")
                 throw error
             }
         }
@@ -369,7 +378,9 @@ class AppContainer(
                 job?.cancelAndJoin()
                 localRepositoryMutex.withLock {
                     val root = repositoryRoot.canonicalFile
-                    val directory = File(repo.localPath).canonicalFile
+                    val selectedDirectory = File(repo.localPath)
+                    require(!Files.isSymbolicLink(selectedDirectory.toPath())) { "Repository directory is a symbolic link" }
+                    val directory = selectedDirectory.canonicalFile
                     require(isSafeRepositoryPath(root, directory)) { "Repository path is outside the app repository root" }
                     if (directory.exists()) {
                         deleteRepositoryTree(directory)

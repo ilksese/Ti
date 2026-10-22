@@ -11,7 +11,14 @@ import app.ti.data.ProviderEntity
 import app.ti.data.SessionEntity
 import app.ti.data.MessageEntity
 import app.ti.testing.RepositoryTestEnvironment
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -21,6 +28,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.nio.file.Files
 
 @RunWith(AndroidJUnit4::class)
 class RepositoryLifecycleTest {
@@ -50,6 +58,44 @@ class RepositoryLifecycleTest {
         assertEquals(environment.root.resolve("project").canonicalPath, repository.localPath)
         assertTrue(container.git.isRepository(environment.root.resolve("project")))
         assertEquals("Working tree clean", container.git.status(repository))
+    }
+
+    @Test
+    fun refusesToCreateOverAnExistingDirectoryWithoutChangingItsFiles() = runBlocking {
+        val directory = environment.root.resolve("project").apply { mkdir() }
+        directory.resolve("notes.txt").writeText("original content")
+        val container = environment.openContainer()
+
+        val failure = runCatching { container.createLocalRepository("project").await() }.exceptionOrNull()
+
+        assertTrue(failure != null)
+        assertTrue(container.dao.repositories().isEmpty())
+        assertEquals("original content", directory.resolve("notes.txt").readText())
+        assertFalse(directory.resolve(".git").exists())
+    }
+
+    @Test
+    fun simultaneousCreationsWithTheSameNameProduceOnlyOneRepository() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val continueInitialization = CompletableDeferred<Unit>()
+        val git = app.ti.git.GitService()
+        val container = environment.openContainer(git = git, initializeNewRepository = {
+            started.complete(Unit)
+            continueInitialization.await()
+            git.init(it)
+        })
+        val first = container.createLocalRepository("project")
+        withTimeout(10_000) { started.await() }
+        val second = container.createLocalRepository("project")
+        continueInitialization.complete(Unit)
+
+        val id = withTimeout(10_000) { first.await() }
+        val failure = runCatching { withTimeout(10_000) { second.await() } }.exceptionOrNull()
+
+        assertTrue(failure != null)
+        assertEquals(listOf(id), container.dao.repositories().map { it.id })
+        assertEquals(RepositoryStatus.READY, container.dao.repository(id)!!.status)
+        assertTrue(git.isRepository(environment.root.resolve("project")))
     }
 
     @Test
@@ -99,6 +145,256 @@ class RepositoryLifecycleTest {
         assertEquals("Imported project", container.dao.repository(id)!!.name)
         assertEquals(RepositoryStatus.READY, container.dao.repository(id)!!.status)
         assertTrue(container.git.isRepository(directory))
+    }
+
+    @Test
+    fun recognizesExistingGitRepositoryWithoutRewritingItsConfiguration() = runBlocking {
+        val directory = environment.root.resolve("project").apply { mkdir() }
+        val container = environment.openContainer(initializeExistingRepository = {
+            error("Existing Git repositories must never be initialized again")
+        })
+        container.git.initialize(directory)
+        val configuration = directory.resolve(".git/config").apply {
+            appendText("\n[validation]\n\tmarker = preserve-this-value\n")
+        }.readText()
+
+        val id = container.importLocalRepository(directory, initialize = true).await()
+
+        assertEquals(RepositoryStatus.READY, container.dao.repository(id)!!.status)
+        assertEquals(configuration, directory.resolve(".git/config").readText())
+    }
+
+    @Test
+    fun failedExistingDirectoryInitializationNeverRemovesUserContentOrGitOutput() = runBlocking {
+        val directory = environment.root.resolve("project").apply { mkdir() }
+        directory.resolve("notes.txt").writeText("keep this project")
+        val container = environment.openContainer(initializeExistingRepository = {
+            it.resolve(".git").mkdir()
+            it.resolve(".git/partial").writeText("initializer output")
+            error("Injected import failure")
+        })
+
+        val failure = runCatching { container.importLocalRepository(directory, initialize = true).await() }.exceptionOrNull()
+
+        assertEquals("Injected import failure", failure?.message)
+        assertEquals(RepositoryStatus.FAILED, container.dao.repositories().single().status)
+        assertEquals("keep this project", directory.resolve("notes.txt").readText())
+        assertEquals("initializer output", directory.resolve(".git/partial").readText())
+    }
+
+    @Test
+    fun duplicateImportDoesNotReplaceRepositoryOrConversation() = runBlocking {
+        val directory = environment.root.resolve("project").apply { mkdir() }
+        val container = environment.openContainer()
+        val id = container.importLocalRepository(directory, initialize = true).await()
+        val original = container.dao.repository(id)!!
+        saveConversation(container, original)
+
+        val failure = runCatching {
+            container.importLocalRepository(File(directory, "../project"), initialize = false).await()
+        }.exceptionOrNull()
+
+        assertTrue(failure != null)
+        assertEquals(listOf(id), container.dao.repositories().map { it.id })
+        assertEquals("conversation", container.dao.session("conversation")!!.id)
+        assertEquals("Keep this message", container.dao.messages("conversation").single().content)
+    }
+
+    @Test
+    fun cancellationFinishesCleanupAndLeavesAnActionableFailureInsteadOfCreatingForever() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val container = environment.openContainer(initializeNewRepository = {
+            it.resolve(".git").mkdir()
+            it.resolve(".git/partial").writeText("incomplete")
+            started.complete(Unit)
+            awaitCancellation()
+        })
+        val operation = container.createLocalRepository("project")
+        withTimeout(10_000) { started.await() }
+
+        operation.cancelAndJoin()
+
+        val repository = container.dao.repositories().single()
+        assertEquals(RepositoryStatus.FAILED, repository.status)
+        assertTrue(repository.progress.contains("interrupted", ignoreCase = true))
+        assertFalse(environment.root.resolve("project").exists())
+    }
+
+    @Test
+    fun initializationPermissionFailureIsDistinguishedFromGenericFailure() = runBlocking {
+        val container = environment.openContainer(initializeNewRepository = {
+            throw SecurityException("Storage access denied")
+        })
+
+        val failure = runCatching { container.createLocalRepository("project").await() }.exceptionOrNull()
+
+        assertTrue(failure is SecurityException)
+        assertEquals(RepositoryStatus.PERMISSION_REQUIRED, container.dao.repositories().single().status)
+        assertFalse(environment.root.resolve("project").exists())
+    }
+
+    @Test
+    fun reopensDiskDatabaseAndRecoversInterruptedMissingAndInvalidRepositoriesThenRechecks() = runBlocking {
+        val database = environment.openDatabase()
+        val complete = environment.root.resolve("complete").apply { mkdir() }
+        val interrupted = environment.root.resolve("interrupted").apply { mkdir() }
+        val invalid = environment.root.resolve("invalid").apply { mkdir() }
+        app.ti.git.GitService().initialize(complete)
+        database.dao().saveRepository(repository("complete", complete, RepositoryStatus.CREATING))
+        database.dao().saveRepository(repository("interrupted", interrupted, RepositoryStatus.CREATING))
+        database.dao().saveRepository(repository("missing", environment.root.resolve("missing")))
+        database.dao().saveRepository(repository("invalid", invalid))
+        environment.closeContainer()
+
+        val container = environment.openContainer()
+        val expected = mapOf(
+            "complete" to RepositoryStatus.READY,
+            "interrupted" to RepositoryStatus.FAILED,
+            "missing" to RepositoryStatus.MISSING,
+            "invalid" to RepositoryStatus.INVALID,
+        )
+        val recovered = withTimeout(10_000) {
+            container.dao.observeRepositories().first { rows -> rows.associate { it.id to it.status } == expected }
+        }
+
+        assertTrue(recovered.single { it.id == "interrupted" }.progress.contains("interrupted", ignoreCase = true))
+        container.git.initialize(interrupted)
+        container.retryRepository(container.dao.repository("interrupted")!!).join()
+        assertEquals(RepositoryStatus.READY, container.dao.repository("interrupted")!!.status)
+        assertEquals("", container.dao.repository("interrupted")!!.progress)
+        environment.closeContainer()
+
+        val reopened = environment.openContainer()
+        assertEquals(RepositoryStatus.READY, reopened.dao.repository("interrupted")!!.status)
+        assertEquals(RepositoryStatus.MISSING, reopened.dao.repository("missing")!!.status)
+        assertEquals(RepositoryStatus.INVALID, reopened.dao.repository("invalid")!!.status)
+    }
+
+    @Test
+    fun removingAnImportInProgressCancelsAndJoinsItButPreservesItsFiles() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val finalized = CompletableDeferred<Unit>()
+        val directory = environment.root.resolve("project").apply { mkdir() }
+        directory.resolve("notes.txt").writeText("user project")
+        val container = environment.openContainer(initializeExistingRepository = {
+            try {
+                started.complete(Unit)
+                awaitCancellation()
+            } finally {
+                withContext(NonCancellable) {
+                    it.resolve("finalized.txt").writeText("cleanup finished")
+                    finalized.complete(Unit)
+                }
+            }
+        })
+        val operation = container.importLocalRepository(directory, initialize = true)
+        withTimeout(10_000) { started.await() }
+        val repository = container.dao.repositories().single()
+
+        withTimeout(10_000) { container.removeRepository(repository).join() }
+
+        assertTrue(operation.isCancelled)
+        assertTrue(finalized.isCompleted)
+        assertNull(container.dao.repository(repository.id))
+        assertEquals("user project", directory.resolve("notes.txt").readText())
+        assertEquals("cleanup finished", directory.resolve("finalized.txt").readText())
+        assertFalse(directory.resolve(".git").exists())
+    }
+
+    @Test
+    fun deletingFilesDuringImportWaitsForCancellationBeforeDeletingTheDirectory() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val finalized = CompletableDeferred<Unit>()
+        val directory = environment.root.resolve("project").apply { mkdir() }
+        directory.resolve("notes.txt").writeText("user project")
+        val container = environment.openContainer(initializeExistingRepository = {
+            try {
+                started.complete(Unit)
+                awaitCancellation()
+            } finally {
+                withContext(NonCancellable) {
+                    it.resolve("finalized.txt").writeText("cleanup finished")
+                    finalized.complete(Unit)
+                }
+            }
+        })
+        val operation = container.importLocalRepository(directory, initialize = true)
+        withTimeout(10_000) { started.await() }
+        val repository = container.dao.repositories().single()
+
+        withTimeout(10_000) { container.deleteRepositoryFiles(repository).join() }
+
+        assertTrue(operation.isCancelled)
+        assertTrue(finalized.isCompleted)
+        assertEquals(RepositoryStatus.MISSING, container.dao.repository(repository.id)!!.status)
+        assertFalse(directory.exists())
+    }
+
+    @Test
+    fun importingRootOrOutsideDirectoryIsRejectedWithoutSavingARecord() = runBlocking {
+        val outside = environment.directory.resolve("outside").apply { mkdir() }
+        outside.resolve("notes.txt").writeText("outside content")
+        val container = environment.openContainer()
+
+        listOf(environment.root, outside).forEach { directory ->
+            val failure = runCatching { container.importLocalRepository(directory, initialize = true).await() }.exceptionOrNull()
+            assertTrue("Unsafe import must be rejected: $directory", failure != null)
+        }
+
+        assertTrue(container.dao.repositories().isEmpty())
+        assertEquals("outside content", outside.resolve("notes.txt").readText())
+        assertFalse(outside.resolve(".git").exists())
+        assertFalse(environment.root.resolve(".git").exists())
+    }
+
+    @Test
+    fun deletingRootOrOutsideDirectoryIsRejectedWithoutRemovingAnyFiles() = runBlocking {
+        val outside = environment.directory.resolve("outside").apply { mkdir() }
+        val rootMarker = environment.root.resolve("root-note.txt").apply { writeText("root content") }
+        val outsideMarker = outside.resolve("notes.txt").apply { writeText("outside content") }
+        val container = environment.openContainer()
+        val unsafe = listOf(repository("root", environment.root), repository("outside", outside))
+        unsafe.forEach { container.dao.saveRepository(it) }
+
+        unsafe.forEach { container.deleteRepositoryFiles(it).join() }
+
+        unsafe.forEach { assertEquals(RepositoryStatus.FAILED, container.dao.repository(it.id)!!.status) }
+        assertEquals("root content", rootMarker.readText())
+        assertEquals("outside content", outsideMarker.readText())
+    }
+
+    @Test
+    fun deletingARepositoryReplacedByASymlinkCannotDeleteAnotherRepository() = runBlocking {
+        val container = environment.openContainer()
+        val id = container.createLocalRepository("project").await()
+        val repository = container.dao.repository(id)!!
+        val originalDirectory = File(repository.localPath)
+        val otherDirectory = environment.root.resolve("other").apply { mkdir() }
+        val marker = otherDirectory.resolve("notes.txt").apply { writeText("another project") }
+        assertTrue(originalDirectory.deleteRecursively())
+        Files.createSymbolicLink(originalDirectory.toPath(), otherDirectory.toPath())
+
+        container.deleteRepositoryFiles(repository).join()
+
+        assertEquals(RepositoryStatus.FAILED, container.dao.repository(id)!!.status)
+        assertEquals("another project", marker.readText())
+        Files.delete(originalDirectory.toPath())
+    }
+
+    @Test
+    fun deletingRepositoryFilesDoesNotFollowSymlinksInsideTheWorkingTree() = runBlocking {
+        val container = environment.openContainer()
+        val id = container.createLocalRepository("project").await()
+        val repository = container.dao.repository(id)!!
+        val outside = environment.directory.resolve("outside").apply { mkdir() }
+        val marker = outside.resolve("notes.txt").apply { writeText("outside content") }
+        Files.createSymbolicLink(File(repository.localPath, "external").toPath(), outside.toPath())
+
+        container.deleteRepositoryFiles(repository).join()
+
+        assertEquals(RepositoryStatus.MISSING, container.dao.repository(id)!!.status)
+        assertFalse(File(repository.localPath).exists())
+        assertEquals("outside content", marker.readText())
     }
 
     private fun repository(id: String, directory: File, status: String = RepositoryStatus.READY) = RepositoryEntity(
