@@ -4,9 +4,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -43,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -54,8 +57,11 @@ import app.ti.data.RepositoryStatus
 import app.ti.validLocalRepositoryName
 
 
-import app.ti.LocalRepositoryInspection
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 
@@ -73,17 +79,39 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
     var confirmInitialize by remember { mutableStateOf<File?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var importDirectories by remember { mutableStateOf<List<File>>(emptyList()) }
+    var loadingDirectories by remember { mutableStateOf(false) }
+    var inspectingDirectory by remember { mutableStateOf(false) }
     var repositoryActions by remember { mutableStateOf<RepositoryEntity?>(null) }
     var confirmDeleteFiles by remember { mutableStateOf<RepositoryEntity?>(null) }
+    var pendingRepository by remember { mutableStateOf<Deferred<String>?>(null) }
+    var operationError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
+    LaunchedEffect(pendingRepository) {
+        val operation = pendingRepository ?: return@LaunchedEffect
+        try {
+            val id = operation.await()
+            withContext(Dispatchers.Main.immediate) { nav.navigate("repo/$id") }
+        } catch (error: CancellationException) {
+            if (!operation.isCancelled) throw error
+        } catch (error: Exception) {
+            operationError = error.message ?: "Repository operation failed"
+        } finally {
+            pendingRepository = null
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Repositories") },
                 actions = {
-                    IconButton(onClick = { importError = null; importDirectories = emptyList(); showImport = true }) {
+                    IconButton(onClick = {
+                        importError = null
+                        importDirectories = emptyList()
+                        loadingDirectories = true
+                        showImport = true
+                    }) {
                         Icon(Icons.Default.FolderOpen, contentDescription = "Add existing local repository")
                     }
                 },
@@ -100,6 +128,7 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
             contentPadding = padding + PaddingValues(bottom = 88.dp),
         ) {
+            operationError?.let { error -> item { ErrorText(error) } }
             items(repositories, key = { it.id }) { repo ->
                 val ready = repo.status == RepositoryStatus.READY
                 val retryable = repo.status in setOf(
@@ -127,12 +156,14 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
                             else Icon(Icons.Default.Folder, contentDescription = null)
                         },
                         trailingContent = {
-                            if (retryable) {
-                                IconButton(onClick = { container.retryRepository(repo) }) {
-                                    Icon(Icons.Default.Refresh, "Retry repository check")
+                            Row {
+                                if (retryable) {
+                                    IconButton(onClick = { container.retryRepository(repo) }) {
+                                        Icon(Icons.Default.Refresh, "Retry repository check")
+                                    }
                                 }
+                                IconButton(onClick = { repositoryActions = repo }) { Icon(Icons.Default.Delete, "Repository actions") }
                             }
-                            IconButton(onClick = { repositoryActions = repo }) { Icon(Icons.Default.Delete, "Repository actions") }
                         },
                     )
                 }
@@ -207,10 +238,19 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
     if (showLocal) {
         LocalRepositoryDialog(
             onDismiss = { showLocal = false },
-            nameConflict = { container.localRepositoryNameExists(it) },
-            onCreate = { name ->
+            existingPaths = repositories.map { it.localPath },
+            nameConflict = { name ->
+                withContext(Dispatchers.IO) {
+                    val target = File(container.repositoryRoot, name.trim()).canonicalFile
+                    container.localRepositoryNameExists(name) || repositories.any {
+                        File(it.localPath).canonicalFile == target
+                    }
+                }
+            },
+            onCreate = { name, displayName ->
                 showLocal = false
-                container.createLocalRepository(name)
+                operationError = null
+                pendingRepository = container.createLocalRepository(name, displayName)
             },
         )
     }
@@ -219,39 +259,57 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             onDismiss = { showClone = false },
             onClone = { name, url ->
                 showClone = false
-                container.cloneRepository(name, url)
+                operationError = null
+                pendingRepository = container.cloneRepository(name, url)
             },
         )
     }
 
     LaunchedEffect(showImport) {
         if (showImport) {
-            importDirectories = container.localRepositoryDirectories()
+            try {
+                importDirectories = container.localRepositoryDirectories()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                importError = error.message ?: "Unable to list directories"
+            } finally {
+                loadingDirectories = false
+            }
         }
     }
 
     if (showImport) {
         ImportDialog(
+            repositoryRoot = container.repositoryRoot,
             directories = importDirectories,
+            loading = loadingDirectories,
+            inspecting = inspectingDirectory,
             error = importError,
             onDismiss = { showImport = false },
             onSelect = { directory ->
                 scope.launch {
-                    runCatching { container.inspectLocalRepository(directory) }
-                        .onSuccess { inspection: LocalRepositoryInspection ->
-                            when {
-                                inspection.duplicate != null -> importError = "This directory is already added"
-                                inspection.isGitRepository -> {
-                                    showImport = false
-                                    container.importLocalRepository(inspection.directory, initialize = false)
-                                }
-                                else -> {
-                                    showImport = false
-                                    confirmInitialize = inspection.directory
-                                }
+                    inspectingDirectory = true
+                    try {
+                        val inspection = container.inspectLocalRepository(directory)
+                        when {
+                            inspection.duplicate != null -> importError = "This directory is already added"
+                            inspection.isGitRepository -> {
+                                showImport = false
+                                pendingRepository = container.importLocalRepository(inspection.directory, initialize = false)
+                            }
+                            else -> {
+                                showImport = false
+                                confirmInitialize = inspection.directory
                             }
                         }
-                        .onFailure { importError = it.message ?: "Unable to inspect directory" }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        importError = error.message ?: "Unable to inspect directory"
+                    } finally {
+                        inspectingDirectory = false
+                    }
                 }
             },
         )
@@ -265,7 +323,7 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
             confirmButton = {
                 TextButton(onClick = {
                     confirmInitialize = null
-                    container.importLocalRepository(directory, initialize = true)
+                    pendingRepository = container.importLocalRepository(directory, initialize = true)
                 }) { Text("Initialize") }
             },
             dismissButton = { TextButton(onClick = { confirmInitialize = null }) { Text("Cancel") } },
@@ -294,23 +352,45 @@ internal fun repositoryStatusText(repo: RepositoryEntity): String {
 
 @Composable
 private fun ImportDialog(
+    repositoryRoot: File,
     directories: List<File>,
+    loading: Boolean,
+    inspecting: Boolean,
     error: String?,
     onDismiss: () -> Unit,
     onSelect: (File) -> Unit,
 ) {
+    var directoryPath by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add existing local repository") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Select a directory under the app repository root.", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = directoryPath,
+                    onValueChange = { directoryPath = it },
+                    label = { Text("Directory path") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TextButton(
+                    enabled = directoryPath.isNotBlank() && !inspecting,
+                    onClick = {
+                        val selected = File(directoryPath.trim())
+                        onSelect(if (selected.isAbsolute) selected else File(repositoryRoot, directoryPath.trim()))
+                    },
+                ) { Text("Check directory") }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (directories.isEmpty()) Text("No directories available")
-                directories.forEach { directory ->
-                    TextButton(onClick = { onSelect(directory) }, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.Folder, contentDescription = null)
-                        Text(directory.name, modifier = Modifier.padding(start = 8.dp))
+                if (loading) Text("Loading directories...")
+                else if (directories.isEmpty()) Text("No directories available")
+                if (inspecting) Text("Checking directory...")
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp).testTag("local-repository-directories")) {
+                    items(directories, key = { it.path }) { directory ->
+                        TextButton(onClick = { onSelect(directory) }, enabled = !inspecting, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Folder, contentDescription = null)
+                            Text(directory.name, modifier = Modifier.padding(start = 8.dp))
+                        }
                     }
                 }
             }
@@ -322,17 +402,22 @@ private fun ImportDialog(
 @Composable
 private fun LocalRepositoryDialog(
     onDismiss: () -> Unit,
-    nameConflict: (String) -> Boolean,
-    onCreate: (String) -> Unit,
+    existingPaths: List<String>,
+    nameConflict: suspend (String) -> Boolean,
+    onCreate: (String, String) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
+    var displayName by remember { mutableStateOf("") }
     val valid = validLocalRepositoryName(name)
-    val conflict = nameConflict(name)
+    var conflict by remember(name, existingPaths) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(name, existingPaths) {
+        conflict = if (valid) nameConflict(name) else false
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New local repository") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -340,19 +425,25 @@ private fun LocalRepositoryDialog(
                     supportingText = {
                         when {
                             name.isNotBlank() && !valid -> Text("Use 1-64 characters without / or \\")
-                            conflict -> Text("A directory with this name already exists")
+                            conflict == true -> Text("A directory or repository with this name already exists")
                         }
                     },
                     singleLine = true,
                 )
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it },
+                    label = { Text("Display name (optional)") },
+                    singleLine = true,
+                )
                 Text(
-                    "The repository will be created in the app's private repositories folder.",
+                    "The repository is stored in the app's private folder. Uninstalling Ti deletes these files.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(name.trim()) }, enabled = valid && !conflict) { Text("Create") }
+            TextButton(onClick = { onCreate(name.trim(), displayName) }, enabled = valid && conflict == false) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

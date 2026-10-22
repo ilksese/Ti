@@ -59,6 +59,7 @@ import app.ti.AppContainer
 import app.ti.data.ModelEntity
 import app.ti.data.ProviderEntity
 import app.ti.data.RepositoryEntity
+import app.ti.data.RepositorySource
 import app.ti.data.SessionEntity
 import app.ti.git.withGlobalGitToken
 import kotlinx.coroutines.launch
@@ -116,6 +117,14 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
             modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
             contentPadding = padding + PaddingValues(bottom = 88.dp),
         ) {
+            item {
+                ListItem(
+                    headlineContent = { Text(value.localPath) },
+                    supportingContent = {
+                        Text(if (value.source == RepositorySource.LOCAL) "Local repository" else "Remote clone")
+                    },
+                )
+            }
             item {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { refresh(value) }, enabled = !busy) { Icon(Icons.Default.Refresh, null); Text("Status") }
