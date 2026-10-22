@@ -36,6 +36,7 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
@@ -210,10 +211,12 @@ class AppContainer(
                 requireUniqueRepositoryPath(canonical)
                 dao.saveRepository(repo.copy(localPath = canonical.path))
                 var createdDirectory = false
+                var createdDirectoryKey: Any? = null
                 try {
                     repositoryRoot.mkdirs()
                     if (!directory.mkdir()) throw IllegalStateException("A directory with this name already exists")
                     createdDirectory = true
+                    createdDirectoryKey = repositoryDirectoryKey(directory)
                     dao.updateRepositoryClone(id, RepositoryStatus.CREATING, "Initializing Git")
                     initializeNewRepository(directory)
                     coroutineContext.ensureActive()
@@ -223,7 +226,7 @@ class AppContainer(
                     withContext(NonCancellable) {
                         dao.updateRepositoryClone(id, RepositoryStatus.FAILED, "Operation interrupted; tap Retry to check again")
                         if (createdDirectory) {
-                            runCatching { cleanupNewRepositoryDirectory(directory) }
+                            runCatching { cleanupNewRepositoryDirectory(directory, createdDirectoryKey) }
                                 .exceptionOrNull()?.let(error::addSuppressed)
                         }
                     }
@@ -233,7 +236,7 @@ class AppContainer(
                     dao.updateRepositoryClone(id, status, error.message ?: "Repository creation failed")
                     // A file may have arrived after mkdir; only the initializer's Git output is owned.
                     if (createdDirectory) {
-                        runCatching { cleanupNewRepositoryDirectory(directory) }
+                        runCatching { cleanupNewRepositoryDirectory(directory, createdDirectoryKey) }
                             .exceptionOrNull()?.let(error::addSuppressed)
                     }
                     throw error
@@ -248,14 +251,21 @@ class AppContainer(
         }
     }
 
-    private fun cleanupNewRepositoryDirectory(directory: File) {
+    private fun repositoryDirectoryKey(directory: File): Any? {
+        val attributes = Files.readAttributes(directory.toPath(), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        return if (attributes.isDirectory && !attributes.isSymbolicLink) attributes.fileKey() else null
+    }
+
+    private fun cleanupNewRepositoryDirectory(directory: File, createdDirectoryKey: Any?) {
+        // A matching path alone does not establish ownership after a rename or symlink swap.
+        if (createdDirectoryKey == null || repositoryDirectoryKey(directory) != createdDirectoryKey) return
         if (!isSafeRepositoryPath(repositoryRoot.canonicalFile, directory.canonicalFile)) return
         deleteRepositoryTree(File(directory, ".git"))
         directory.delete()
     }
 
     private fun deleteRepositoryTree(directory: File) {
-        if (!Files.exists(directory.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
+        if (!Files.exists(directory.toPath(), LinkOption.NOFOLLOW_LINKS)) return
         // walkFileTree does not follow symlinks, including links inside .git.
         Files.walkFileTree(directory.toPath(), object : SimpleFileVisitor<Path>() {
             override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
@@ -377,16 +387,19 @@ class AppContainer(
             try {
                 job?.cancelAndJoin()
                 localRepositoryMutex.withLock {
+                    val current = dao.repository(repo.id) ?: return@withLock
+                    if (current.localPath != repo.localPath || current.storageType != repo.storageType) return@withLock
+                    require(current.storageType == RepositoryStorageType.APP_PRIVATE) { "Unsupported repository storage type" }
                     val root = repositoryRoot.canonicalFile
-                    val selectedDirectory = File(repo.localPath)
+                    val selectedDirectory = File(current.localPath)
                     require(!Files.isSymbolicLink(selectedDirectory.toPath())) { "Repository directory is a symbolic link" }
                     val directory = selectedDirectory.canonicalFile
                     require(isSafeRepositoryPath(root, directory)) { "Repository path is outside the app repository root" }
                     if (directory.exists()) {
                         deleteRepositoryTree(directory)
                     }
+                    dao.updateRepositoryClone(current.id, RepositoryStatus.MISSING, "Local files deleted")
                 }
-                dao.updateRepositoryClone(repo.id, RepositoryStatus.MISSING, "Local files deleted")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {

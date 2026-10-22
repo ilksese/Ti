@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.ti.data.RepositorySource
 import app.ti.data.RepositoryStatus
+import app.ti.data.RepositoryStorageType
 import app.ti.data.RepositoryEntity
 import app.ti.data.ModelEntity
 import app.ti.data.ProviderEntity
@@ -395,6 +396,101 @@ class RepositoryLifecycleTest {
         assertEquals(RepositoryStatus.MISSING, container.dao.repository(id)!!.status)
         assertFalse(File(repository.localPath).exists())
         assertEquals("outside content", marker.readText())
+    }
+
+    @Test
+    fun failedCreationCannotCleanGitMetadataThroughAReplacedTopLevelSymlink() = runBlocking {
+        val git = app.ti.git.GitService()
+        val other = environment.root.resolve("other").apply { mkdir() }
+        git.initialize(other)
+        val configuration = other.resolve(".git/config").readText()
+        other.resolve("notes.txt").writeText("another project")
+        val container = environment.openContainer(git = git, initializeNewRepository = { directory ->
+            check(directory.delete())
+            Files.createSymbolicLink(directory.toPath(), other.toPath())
+            error("Injected failure after replacing directory")
+        })
+
+        val failure = runCatching { container.createLocalRepository("project").await() }.exceptionOrNull()
+
+        assertEquals("Injected failure after replacing directory", failure?.message)
+        assertTrue("Cleanup must not remove the other repository's .git", git.isRepository(other))
+        assertEquals(configuration, other.resolve(".git/config").readText())
+        assertEquals("another project", other.resolve("notes.txt").readText())
+        assertTrue(Files.isSymbolicLink(environment.root.resolve("project").toPath()))
+        Files.delete(environment.root.resolve("project").toPath())
+    }
+
+    @Test
+    fun failedCreationCannotCleanGitMetadataFromAReplacementDirectoryWithTheSamePath() = runBlocking {
+        val git = app.ti.git.GitService()
+        val container = environment.openContainer(git = git, initializeNewRepository = { directory ->
+            check(directory.renameTo(environment.root.resolve("moved-original")))
+            check(directory.mkdir())
+            git.initialize(directory)
+            directory.resolve("notes.txt").writeText("replacement project")
+            error("Injected failure after directory replacement")
+        })
+
+        val failure = runCatching { container.createLocalRepository("project").await() }.exceptionOrNull()
+
+        assertEquals("Injected failure after directory replacement", failure?.message)
+        val replacement = environment.root.resolve("project")
+        assertTrue("Cleanup must only touch the exact directory created by this operation", git.isRepository(replacement))
+        assertEquals("replacement project", replacement.resolve("notes.txt").readText())
+    }
+
+    @Test
+    fun staleDeleteConfirmationCannotDeleteANewRepositoryThatReusesTheOldPath() = runBlocking {
+        val container = environment.openContainer()
+        val oldId = container.createLocalRepository("project").await()
+        val oldRepository = container.dao.repository(oldId)!!
+        container.removeRepository(oldRepository).join()
+        assertTrue(File(oldRepository.localPath).deleteRecursively())
+        val newId = container.createLocalRepository("project").await()
+        val newRepository = container.dao.repository(newId)!!
+        val marker = File(newRepository.localPath, "notes.txt").apply { writeText("new project") }
+
+        repeat(2) { container.deleteRepositoryFiles(oldRepository).join() }
+
+        assertNull(container.dao.repository(oldId))
+        assertEquals(RepositoryStatus.READY, container.dao.repository(newId)!!.status)
+        assertTrue(container.git.isRepository(File(newRepository.localPath)))
+        assertEquals("new project", marker.readText())
+    }
+
+    @Test
+    fun deletingTheSameRepositoryFilesTwiceIsIdempotent() = runBlocking {
+        val container = environment.openContainer()
+        val id = container.createLocalRepository("project").await()
+        val repository = container.dao.repository(id)!!
+
+        repeat(2) { container.deleteRepositoryFiles(repository).join() }
+
+        assertEquals(RepositoryStatus.MISSING, container.dao.repository(id)!!.status)
+        assertEquals("Local files deleted", container.dao.repository(id)!!.progress)
+        assertFalse(File(repository.localPath).exists())
+    }
+
+    @Test
+    fun deleteConfirmationMustMatchTheCurrentRepositoryPathAndStorageType() = runBlocking {
+        val container = environment.openContainer()
+        val id = container.createLocalRepository("project").await()
+        val otherId = container.createLocalRepository("other").await()
+        val repository = container.dao.repository(id)!!
+        val other = container.dao.repository(otherId)!!
+        val staleConfirmations = listOf(
+            repository.copy(storageType = RepositoryStorageType.SHARED_URI),
+            repository.copy(localPath = other.localPath),
+        )
+
+        staleConfirmations.forEach { confirmation ->
+            container.deleteRepositoryFiles(confirmation).join()
+            assertEquals(RepositoryStatus.READY, container.dao.repository(id)!!.status)
+            assertEquals(RepositoryStatus.READY, container.dao.repository(otherId)!!.status)
+            assertTrue(container.git.isRepository(File(repository.localPath)))
+            assertTrue(container.git.isRepository(File(other.localPath)))
+        }
     }
 
     private fun repository(id: String, directory: File, status: String = RepositoryStatus.READY) = RepositoryEntity(
