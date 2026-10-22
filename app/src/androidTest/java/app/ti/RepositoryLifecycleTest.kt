@@ -28,6 +28,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.eclipse.jgit.api.Git
 import java.io.File
 import java.nio.file.Files
 
@@ -59,6 +60,76 @@ class RepositoryLifecycleTest {
         assertEquals(environment.root.resolve("project").canonicalPath, repository.localPath)
         assertTrue(container.git.isRepository(environment.root.resolve("project")))
         assertEquals("Working tree clean", container.git.status(repository))
+    }
+
+    @Test
+    fun clonesLocalOriginAsReadyRemoteRepositoryAndCannotPersistLateCloningProgress() = runBlocking {
+        val git = app.ti.git.GitService()
+        val origin = environment.directory.resolve("origin").apply { mkdir() }
+        git.init(origin)
+        origin.resolve("README.md").writeText("project from a local origin")
+        git.commit(repository("origin", origin), "Initial project", "Test Author", "author@example.invalid")
+        val expectedCommit = Git.open(origin).use { it.repository.resolve("HEAD").name }
+        val url = origin.toURI().toString()
+        val database = environment.openDatabase()
+        database.dao().saveRepository(repository("missing", environment.root.resolve("missing")))
+        environment.closeContainer()
+        val container = environment.openContainer(git = git)
+
+        val id = container.cloneRepository("Cloned project", url).await()
+
+        val cloned = container.dao.repository(id)!!
+        assertEquals("Cloned project", cloned.name)
+        assertEquals(RepositorySource.REMOTE, cloned.source)
+        assertEquals(url, cloned.remoteUrl)
+        assertEquals(RepositoryStatus.READY, cloned.status)
+        assertEquals("", cloned.progress)
+        assertEquals(RepositoryStatus.MISSING, container.dao.repository("missing")!!.status)
+        assertEquals("project from a local origin", File(cloned.localPath, "README.md").readText())
+        Git.open(File(cloned.localPath)).use { result ->
+            assertEquals(expectedCommit, result.repository.resolve("HEAD").name)
+            assertEquals("Initial project", result.log().call().first().fullMessage)
+            assertEquals("Test Author", result.log().call().first().authorIdent.name)
+            assertEquals(url, result.repository.config.getString("remote", "origin", "url"))
+            assertEquals(url, result.repository.config.getString("remote", "origin", "pushurl"))
+        }
+
+        environment.closeContainer()
+        val persisted = environment.openDatabase().dao().repository(id)!!
+        assertEquals(RepositoryStatus.READY, persisted.status)
+        assertEquals("", persisted.progress)
+    }
+
+    @Test
+    fun closingContainerCompletesItsCloneAndNeverPersistsAnInFlightClone() = runBlocking {
+        val git = app.ti.git.GitService()
+        val origin = environment.directory.resolve("origin").apply { mkdir() }
+        git.init(origin)
+        origin.resolve("README.md").writeText("small local origin")
+        git.commit(repository("origin", origin), "Initial project", "Test Author", "author@example.invalid")
+        val container = environment.openContainer(git = git)
+        val operation = container.cloneRepository("Cloned project", origin.toURI().toString())
+
+        environment.closeContainer()
+
+        assertTrue(operation.isCompleted)
+        val persisted = environment.openDatabase().dao().repositories()
+        assertTrue(persisted.all { it.status == RepositoryStatus.READY || it.status == RepositoryStatus.FAILED })
+    }
+
+    @Test
+    fun nonexistentLocalOriginReturnsFailureAndPersistsAnActionableCloneError() = runBlocking {
+        val container = environment.openContainer()
+        val url = environment.directory.resolve("missing-origin").toURI().toString()
+
+        val failure = runCatching { container.cloneRepository("Missing origin", url).await() }.exceptionOrNull()
+
+        assertTrue(failure != null)
+        val persisted = container.dao.repositories().single()
+        assertEquals(RepositorySource.REMOTE, persisted.source)
+        assertEquals(url, persisted.remoteUrl)
+        assertEquals(RepositoryStatus.FAILED, persisted.status)
+        assertTrue(persisted.progress.isNotBlank())
     }
 
     @Test

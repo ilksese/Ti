@@ -27,6 +27,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -144,7 +146,7 @@ class AppContainer(
         }
     }
 
-    fun cloneRepository(name: String, url: String) {
+    fun cloneRepository(name: String, url: String): Deferred<String> {
         val id = UUID.randomUUID().toString()
         val directory = File(repositoryRoot, id)
         val repo = RepositoryEntity(
@@ -155,31 +157,42 @@ class AppContainer(
             username = "",
             token = "",
             createdAt = System.currentTimeMillis(),
-            status = "cloning",
+            status = RepositoryStatus.CLONING,
             progress = "Starting clone",
         )
-        val job = scope.launch(start = CoroutineStart.LAZY) {
-            dao.saveRepository(repo)
+        return repositoryOperation(id) {
             try {
+                dao.saveRepository(repo)
                 val token = dao.setting("git_token")?.value.orEmpty()
                 val proxy = dao.gitProxy()
                 val cloneUrl = gitProxyUrl(url, proxy)
-                git.clone(cloneUrl, directory, "git", if (cloneUrl == url) token else "") { progress ->
-                    scope.launch { dao.updateRepositoryClone(id, "cloning", progress) }
+                coroutineScope {
+                    val progress = Channel<String>(Channel.CONFLATED)
+                    val recorder = launch {
+                        for (message in progress) dao.updateRepositoryClone(id, RepositoryStatus.CLONING, message)
+                    }
+                    try {
+                        git.clone(cloneUrl, directory, "git", if (cloneUrl == url) token else "") { progress.trySend(it) }
+                    } finally {
+                        progress.close()
+                    }
+                    // Drain the owned collector before publishing Ready; it cannot overwrite completion.
+                    recorder.join()
                 }
                 coroutineContext.ensureActive()
                 git.configureRemote(repo, proxy)
-                dao.updateRepositoryClone(id, "ready", "")
+                dao.updateRepositoryClone(id, RepositoryStatus.READY, "")
+                id
             } catch (error: CancellationException) {
+                withContext(NonCancellable) {
+                    dao.updateRepositoryClone(id, RepositoryStatus.FAILED, "Clone interrupted")
+                }
                 throw error
             } catch (error: Throwable) {
-                dao.updateRepositoryClone(id, "failed", error.message ?: "Clone failed")
-            } finally {
-                cloneJobs.remove(id)
+                dao.updateRepositoryClone(id, RepositoryStatus.FAILED, error.message ?: "Clone failed")
+                throw error
             }
         }
-        cloneJobs[id] = job
-        job.start()
     }
 
 
