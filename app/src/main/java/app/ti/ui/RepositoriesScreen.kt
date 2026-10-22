@@ -91,13 +91,17 @@ internal fun RepositoriesScreen(container: AppContainer, nav: NavController) {
         val operation = pendingRepository ?: return@LaunchedEffect
         try {
             val id = operation.await()
-            withContext(Dispatchers.Main.immediate) { nav.navigate("repo/$id") }
+            withContext(Dispatchers.Main.immediate) {
+                if (pendingRepository === operation) nav.navigate("repo/$id")
+            }
         } catch (error: CancellationException) {
             if (!operation.isCancelled) throw error
         } catch (error: Exception) {
-            operationError = error.message ?: "Repository operation failed"
+            if (pendingRepository === operation) {
+                operationError = error.message ?: "Repository operation failed"
+            }
         } finally {
-            pendingRepository = null
+            if (pendingRepository === operation) pendingRepository = null
         }
     }
 

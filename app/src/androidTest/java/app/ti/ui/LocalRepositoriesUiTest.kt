@@ -29,6 +29,7 @@ import app.ti.data.RepositorySource
 import app.ti.data.RepositoryEntity
 import app.ti.data.RepositoryStatus
 import app.ti.testing.RepositoryTestEnvironment
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -292,9 +293,53 @@ class LocalRepositoriesUiTest {
         assertTrue(runBlocking { container.dao.repositories().isEmpty() })
     }
 
+    @Test
+    fun aNewSubmissionKeepsItsNavigationWhenThePreviousOperationFinishes() {
+        val firstStarted = CompletableDeferred<Unit>()
+        val secondStarted = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val releaseSecond = CompletableDeferred<Unit>()
+        reopenContainer { directory ->
+            if (directory.name == "first-project") {
+                firstStarted.complete(Unit)
+                releaseFirst.await()
+            } else {
+                secondStarted.complete(Unit)
+                releaseSecond.await()
+            }
+            container.git.init(directory)
+        }
+        try {
+            createThroughUi("first-project")
+            rule.waitUntil(15_000) { firstStarted.isCompleted }
+            createThroughUi("second-project")
+            rule.waitForIdle()
+
+            releaseFirst.complete(Unit)
+            rule.waitUntil(15_000) { secondStarted.isCompleted }
+            releaseSecond.complete(Unit)
+
+            awaitDescription("New session")
+            rule.onNodeWithText("second-project").assertIsDisplayed()
+            val repositories = runBlocking { container.dao.repositories() }
+            assertEquals(2, repositories.size)
+            assertTrue(repositories.all { it.status == RepositoryStatus.READY })
+        } finally {
+            releaseFirst.complete(Unit)
+            releaseSecond.complete(Unit)
+        }
+    }
+
     private fun openNewLocalRepository() {
         rule.onNodeWithContentDescription("Add repository").performClick()
         rule.onNode(hasText("New local repository") and hasClickAction()).performClick()
+    }
+
+    private fun createThroughUi(name: String) {
+        openNewLocalRepository()
+        rule.onNode(hasText("Repository name") and hasSetTextAction()).performTextInput(name)
+        awaitEnabled("Create")
+        clickButton("Create")
     }
 
     private fun selectExistingDirectory(name: String) {
