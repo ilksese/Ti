@@ -67,9 +67,6 @@ class TiDaoTest {
         assertEquals(listOf("b", "a"), dao.repositories().map { it.id })
         assertEquals(listOf("b", "a"), dao.observeRepositories().first().map { it.id })
 
-        dao.saveRepository(repository("a", 1, name = "renamed"))
-        assertEquals("renamed", dao.repository("a")!!.name)
-
         dao.deleteRepository(repository("a", 1))
         assertNull(dao.repository("a"))
     }
@@ -110,13 +107,20 @@ class TiDaoTest {
     }
 
     @Test
-    fun localPathIsUnique() = runBlocking {
+    fun duplicateLocalPathIsRejectedWithoutDeletingRepositoryConversation() = runBlocking {
         dao.saveRepository(repository("one", 1))
+        dao.saveProvider(provider("p", "acme"))
+        dao.saveModel(model("m", "p", "gpt"))
+        dao.saveSession(session("conversation", "one", "m", 1))
+        dao.saveMessage(message("original", "conversation", "user", 1))
 
         val duplicate = repository("two", 2).copy(localPath = "/tmp/one")
-        dao.saveRepository(duplicate)
+        val failure = runCatching { dao.saveRepository(duplicate) }.exceptionOrNull()
 
-        assertEquals(listOf("two"), dao.repositories().map { it.id })
+        assertTrue("A duplicate path must fail rather than replace the original repository", failure != null)
+        assertEquals(listOf("one"), dao.repositories().map { it.id })
+        assertEquals("conversation", dao.session("conversation")!!.id)
+        assertEquals(listOf("original"), dao.messages("conversation").map { it.id })
     }
 
     @Test

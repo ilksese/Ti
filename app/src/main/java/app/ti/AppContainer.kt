@@ -20,9 +20,12 @@ import app.ti.llm.matchModelInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -30,15 +33,25 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
+import java.nio.file.FileVisitResult
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 
-class AppContainer(context: Context) {
-    val repositoryRoot = File(context.filesDir, "repositories")
-    val database = TiDatabase.create(context)
+class AppContainer(
+    context: Context,
+    val database: TiDatabase = TiDatabase.create(context),
+    val repositoryRoot: File = File(context.filesDir, "repositories"),
+    val git: GitService = GitService(),
+    private val initializeNewRepository: suspend (File) -> Unit = git::init,
+    private val initializeExistingRepository: suspend (File) -> Unit = git::initialize,
+) {
     val dao = database.dao()
-    val git = GitService()
     val llm = OpenAiClient()
     val files = RepoFiles()
     private val modelsDev = ModelsDevClient(File(context.filesDir, "models-dev-cache.json"))
@@ -47,15 +60,32 @@ class AppContainer(context: Context) {
     private val localRepositoryMutex = Mutex()
     val agents = AgentRunManager(dao, llm, files, git, scope)
 
-    init {
-        scope.launch(Dispatchers.IO) {
+    private val startup = scope.async(Dispatchers.IO) {
             dao.interruptActiveSessions()
             dao.interruptPendingTools()
             recoverRepositories()
-        }
+    }
+
+    init {
         scope.launch {
             if (dao.setting(MODEL_AUTO_COMPLETE)?.value == "true") modelsDev.refreshIfStale()
         }
+    }
+
+    suspend fun close() {
+        scope.coroutineContext[Job]!!.cancelAndJoin()
+        withContext(Dispatchers.IO) { database.close() }
+    }
+
+    private fun <T> repositoryOperation(id: String, operation: suspend () -> T): Deferred<T> {
+        val task = scope.async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            startup.await()
+            operation()
+        }
+        cloneJobs[id] = task
+        task.invokeOnCompletion { cloneJobs.remove(id, task) }
+        task.start()
+        return task
     }
 
     /** Reconciles persisted repository state after a process restart. */
@@ -89,8 +119,9 @@ class AppContainer(context: Context) {
     }
 
     /** Re-checks an unavailable repository without blocking the Repositories screen. */
-    fun retryRepository(repo: RepositoryEntity) {
-        scope.launch(Dispatchers.IO) {
+    fun retryRepository(repo: RepositoryEntity): Job {
+        cloneJobs[repo.id]?.takeIf { it.isActive }?.let { return it }
+        return repositoryOperation(repo.id) {
             dao.updateRepositoryClone(repo.id, RepositoryStatus.CREATING, "Checking repository")
             try {
                 val directory = File(repo.localPath)
@@ -102,6 +133,8 @@ class AppContainer(context: Context) {
                     else ->
                         dao.updateRepositoryClone(repo.id, RepositoryStatus.INVALID, "Directory is not a Git repository")
                 }
+            } catch (error: CancellationException) {
+                throw error
             } catch (_: SecurityException) {
                 dao.updateRepositoryClone(repo.id, RepositoryStatus.PERMISSION_REQUIRED, "Permission required")
             } catch (error: Throwable) {
@@ -150,14 +183,13 @@ class AppContainer(context: Context) {
 
 
     /** Creates a new app-private repository and initializes it with JGit. */
-    fun createLocalRepository(name: String) {
+    fun createLocalRepository(name: String, displayName: String = name): Deferred<String> {
         val normalized = name.trim()
-        require(validLocalRepositoryName(normalized)) { "Invalid repository name" }
         val id = UUID.randomUUID().toString()
         val directory = File(repositoryRoot, normalized)
         val repo = RepositoryEntity(
             id = id,
-            name = normalized,
+            name = displayName.trim().ifBlank { normalized },
             remoteUrl = null,
             localPath = directory.path,
             username = "",
@@ -168,31 +200,67 @@ class AppContainer(context: Context) {
             source = RepositorySource.LOCAL,
             storageType = RepositoryStorageType.APP_PRIVATE,
         )
-        val job = scope.launch {
+        return repositoryOperation(id) {
+            require(validLocalRepositoryName(normalized)) { "Invalid repository name" }
             localRepositoryMutex.withLock {
                 // Re-check under a process-wide lock so two submissions cannot race.
-                if (directory.exists()) return@withLock
-                dao.saveRepository(repo)
+                require(!directory.exists()) { "A directory with this name already exists" }
+                val canonical = directory.canonicalFile
+                require(isSafeRepositoryPath(repositoryRoot.canonicalFile, canonical)) { "Invalid repository path" }
+                requireUniqueRepositoryPath(canonical)
+                dao.saveRepository(repo.copy(localPath = canonical.path))
                 var createdDirectory = false
                 try {
                     repositoryRoot.mkdirs()
                     if (!directory.mkdir()) throw IllegalStateException("A directory with this name already exists")
                     createdDirectory = true
                     dao.updateRepositoryClone(id, RepositoryStatus.CREATING, "Initializing Git")
-                    git.init(directory)
+                    initializeNewRepository(directory)
                     coroutineContext.ensureActive()
                     dao.updateRepositoryClone(id, RepositoryStatus.READY, "")
+                    id
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
                     dao.updateRepositoryClone(id, RepositoryStatus.FAILED, error.message ?: "Repository creation failed")
-                    // The directory was created by this operation, so partial JGit output is safe to remove.
-                    if (createdDirectory) withContext(Dispatchers.IO) { directory.deleteRecursively() }
+                    // A file may have arrived after mkdir; only the initializer's Git output is owned.
+                    if (createdDirectory) {
+                        runCatching { cleanupNewRepositoryDirectory(directory) }
+                            .exceptionOrNull()?.let(error::addSuppressed)
+                    }
+                    throw error
                 }
             }
         }
-        cloneJobs[id] = job
-        job.invokeOnCompletion { cloneJobs.remove(id) }
+    }
+
+    private suspend fun requireUniqueRepositoryPath(directory: File) {
+        require(dao.repositories().none { File(it.localPath).canonicalFile == directory }) {
+            "This directory has already been added"
+        }
+    }
+
+    private fun cleanupNewRepositoryDirectory(directory: File) {
+        if (!isSafeRepositoryPath(repositoryRoot.canonicalFile, directory.canonicalFile)) return
+        deleteRepositoryTree(File(directory, ".git"))
+        directory.delete()
+    }
+
+    private fun deleteRepositoryTree(directory: File) {
+        if (!Files.exists(directory.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
+        // walkFileTree does not follow symlinks, including links inside .git.
+        Files.walkFileTree(directory.toPath(), object : SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
+                Files.delete(file)
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(directory: Path, error: IOException?): FileVisitResult {
+                if (error != null) throw error
+                Files.delete(directory)
+                return FileVisitResult.CONTINUE
+            }
+        })
     }
 
 
@@ -223,17 +291,17 @@ class AppContainer(context: Context) {
     }
 
     /** Adds an existing directory, optionally initializing Git after explicit user confirmation. */
-    fun importLocalRepository(directory: File, initialize: Boolean) {
-        scope.launch {
-            val canonical = try {
-                validateLocalRepositoryDirectory(directory)
-            } catch (_: Throwable) {
-                return@launch
-            }
-            val id = UUID.randomUUID().toString()
+    fun importLocalRepository(
+        directory: File,
+        initialize: Boolean,
+        displayName: String = directory.name,
+    ): Deferred<String> {
+        val id = UUID.randomUUID().toString()
+        return repositoryOperation(id) {
+            val canonical = validateLocalRepositoryDirectory(directory)
             val repo = RepositoryEntity(
                 id = id,
-                name = canonical.name,
+                name = displayName.trim().ifBlank { canonical.name },
                 remoteUrl = null,
                 localPath = canonical.path,
                 username = "",
@@ -244,22 +312,27 @@ class AppContainer(context: Context) {
                 source = RepositorySource.LOCAL,
                 storageType = RepositoryStorageType.APP_PRIVATE,
             )
-            val inserted = localRepositoryMutex.withLock {
-                val existing = withContext(Dispatchers.IO) {
-                    dao.repositories().firstOrNull { runCatching { File(it.localPath).canonicalFile == canonical }.getOrDefault(false) }
-                }
-                if (existing != null) false else {
-                    dao.saveRepository(repo)
-                    true
-                }
+            localRepositoryMutex.withLock {
+                requireUniqueRepositoryPath(canonical)
+                dao.saveRepository(repo)
             }
-            if (!inserted) return@launch
             try {
-                if (initialize) git.initialize(canonical)
+                if (!git.isRepository(canonical)) {
+                    require(initialize) { "Confirm Git initialization before adding this directory" }
+                    initializeExistingRepository(canonical)
+                }
+                coroutineContext.ensureActive()
                 check(git.isRepository(canonical)) { "Directory is not a Git repository" }
                 dao.updateRepositoryClone(id, RepositoryStatus.READY, "")
+                id
+            } catch (error: CancellationException) {
+                withContext(NonCancellable) {
+                    dao.updateRepositoryClone(id, RepositoryStatus.FAILED, "Operation interrupted; tap Retry to check again")
+                }
+                throw error
             } catch (error: Throwable) {
                 dao.updateRepositoryClone(id, RepositoryStatus.FAILED, error.message ?: "Import failed")
+                throw error
             }
         }
     }
@@ -274,11 +347,12 @@ class AppContainer(context: Context) {
     }
 
     /** Removes a repository from the list without touching its files. */
-    fun removeRepository(repo: RepositoryEntity) {
-        val job = cloneJobs.remove(repo.id)
-        scope.launch {
+    fun removeRepository(repo: RepositoryEntity): Job {
+        val job = cloneJobs[repo.id]
+        return scope.launch(Dispatchers.IO) {
+            startup.await()
             job?.cancelAndJoin()
-            dao.deleteRepository(repo)
+            localRepositoryMutex.withLock { dao.deleteRepository(repo) }
         }
     }
 
@@ -287,20 +361,23 @@ class AppContainer(context: Context) {
      * Keeping the record lets users remove it from the list separately and makes
      * the destructive action explicit in the UI.
      */
-    fun deleteRepositoryFiles(repo: RepositoryEntity) {
-        val job = cloneJobs.remove(repo.id)
-        scope.launch {
+    fun deleteRepositoryFiles(repo: RepositoryEntity): Job {
+        val job = cloneJobs[repo.id]
+        return scope.launch(Dispatchers.IO) {
+            startup.await()
             try {
                 job?.cancelAndJoin()
-                withContext(Dispatchers.IO) {
+                localRepositoryMutex.withLock {
                     val root = repositoryRoot.canonicalFile
                     val directory = File(repo.localPath).canonicalFile
                     require(isSafeRepositoryPath(root, directory)) { "Repository path is outside the app repository root" }
                     if (directory.exists()) {
-                        check(directory.deleteRecursively()) { "Unable to delete repository files" }
+                        deleteRepositoryTree(directory)
                     }
                 }
                 dao.updateRepositoryClone(repo.id, RepositoryStatus.MISSING, "Local files deleted")
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Throwable) {
                 dao.updateRepositoryClone(repo.id, RepositoryStatus.FAILED, error.message ?: "Unable to delete repository files")
             }

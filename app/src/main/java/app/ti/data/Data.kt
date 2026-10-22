@@ -174,7 +174,7 @@ interface TiDao {
     @Query("SELECT * FROM repositories WHERE id = :id")
     suspend fun repository(id: String): RepositoryEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun saveRepository(value: RepositoryEntity)
 
     @Delete
