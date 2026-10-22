@@ -7,4 +7,4 @@ repositories and does not request shared-storage permissions. Uninstalling Ti
 deletes its private repository files.
 
 See [repository testing](docs/testing/repositories.md) for isolated test coverage
-and the real-device regression commands.
+and the emulator-only regression command, which refuses to operate on physical devices.
