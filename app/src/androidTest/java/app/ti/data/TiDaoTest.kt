@@ -67,9 +67,6 @@ class TiDaoTest {
         assertEquals(listOf("b", "a"), dao.repositories().map { it.id })
         assertEquals(listOf("b", "a"), dao.observeRepositories().first().map { it.id })
 
-        dao.saveRepository(repository("a", 1, name = "renamed"))
-        assertEquals("renamed", dao.repository("a")!!.name)
-
         dao.deleteRepository(repository("a", 1))
         assertNull(dao.repository("a"))
     }
@@ -84,6 +81,46 @@ class TiDaoTest {
         dao.interruptCloningRepositories()
         assertEquals("failed", dao.repository("a")!!.status)
         assertEquals("Clone interrupted", dao.repository("a")!!.progress)
+    }
+
+    @Test
+    fun localRepositoryPersistsWithoutRemoteUrl() = runBlocking {
+        val local = repository("local", 1).copy(
+            remoteUrl = null,
+            localPath = "/data/local",
+            status = RepositoryStatus.MISSING,
+            progress = "Directory is missing",
+            source = RepositorySource.LOCAL,
+            storageType = RepositoryStorageType.APP_PRIVATE,
+        )
+        dao.saveRepository(local)
+
+        val restored = dao.repository("local")!!
+        assertNull(restored.remoteUrl)
+        assertEquals(RepositorySource.LOCAL, restored.source)
+        assertEquals(RepositoryStorageType.APP_PRIVATE, restored.storageType)
+        assertEquals(RepositoryStatus.MISSING, restored.status)
+        assertEquals("Directory is missing", restored.progress)
+
+        dao.updateRepositoryClone("local", RepositoryStatus.READY, "")
+        assertEquals(RepositoryStatus.READY, dao.repository("local")!!.status)
+    }
+
+    @Test
+    fun duplicateLocalPathIsRejectedWithoutDeletingRepositoryConversation() = runBlocking {
+        dao.saveRepository(repository("one", 1))
+        dao.saveProvider(provider("p", "acme"))
+        dao.saveModel(model("m", "p", "gpt"))
+        dao.saveSession(session("conversation", "one", "m", 1))
+        dao.saveMessage(message("original", "conversation", "user", 1))
+
+        val duplicate = repository("two", 2).copy(localPath = "/tmp/one")
+        val failure = runCatching { dao.saveRepository(duplicate) }.exceptionOrNull()
+
+        assertTrue("A duplicate path must fail rather than replace the original repository", failure != null)
+        assertEquals(listOf("one"), dao.repositories().map { it.id })
+        assertEquals("conversation", dao.session("conversation")!!.id)
+        assertEquals(listOf("original"), dao.messages("conversation").map { it.id })
     }
 
     @Test

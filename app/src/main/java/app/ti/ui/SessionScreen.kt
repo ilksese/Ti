@@ -6,11 +6,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -41,6 +48,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,10 +86,16 @@ internal fun SessionScreen(container: AppContainer, nav: NavController, sessionI
     var rename by remember { mutableStateOf(false) }
     var showModel by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    val isAtBottom = listState.layoutInfo.let { layout ->
-        val last = layout.visibleItemsInfo.lastOrNull()
-        last == null || (last.index == layout.totalItemsCount - 1 && last.offset + last.size <= layout.viewportEndOffset)
-    }
+    val isAtBottom = remember(listState) {
+        derivedStateOf {
+            val layout = listState.layoutInfo
+            val last = layout.visibleItemsInfo.lastOrNull()
+            last == null || (
+                last.index == layout.totalItemsCount - 1 &&
+                    last.offset + last.size <= layout.viewportEndOffset - layout.afterContentPadding
+                )
+        }
+    }.value
     LaunchedEffect(visibleMessages.size, state?.partial, state?.reasoning, state?.reasoningId, state?.retryText, state?.error) {
         val transientItems = when {
             liveReasoning != null -> 1 + if (state?.partial?.isNullOrBlank() == false) 1 else 0
@@ -94,49 +108,59 @@ internal fun SessionScreen(container: AppContainer, nav: NavController, sessionI
     }
 
     Scaffold(
+        modifier = Modifier.imePadding(),
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(session?.title ?: "Session", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        val current = models.firstOrNull { it.id == session?.modelId }?.modelId
-                        if (current != null) {
-                            Text(current, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            ImeAwareTopBar {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(session?.title ?: "Session", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            val current = models.firstOrNull { it.id == session?.modelId }?.modelId
+                            if (current != null) {
+                                Text(current, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
-                    }
-                },
-                navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = {
-                    IconButton(onClick = { showModel = true }, enabled = session != null && state?.running != true) {
-                        Icon(Icons.Default.SwapHoriz, "Switch model")
-                    }
-                    IconButton(onClick = { rename = true }) { Icon(Icons.Default.Edit, "Rename") }
-                    IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete") }
-                },
-            )
+                    },
+                    navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                    actions = {
+                        IconButton(onClick = { showModel = true }, enabled = session != null && state?.running != true) {
+                            Icon(Icons.Default.SwapHoriz, "Switch model")
+                        }
+                        IconButton(onClick = { rename = true }) { Icon(Icons.Default.Edit, "Rename") }
+                        IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete") }
+                    },
+                )
+            }
         },
         bottomBar = {
-            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Message or /compact") },
-                    maxLines = 6,
-                    enabled = state?.running != true,
-                )
-                Spacer(Modifier.width(8.dp))
-                IconButton(
-                    onClick = { val value = input; input = ""; container.agents.send(sessionId, value) },
-                    enabled = input.isNotBlank() && state?.running != true,
-                ) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
+            Surface {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Message or /compact") },
+                        maxLines = 6,
+                        enabled = state?.running != true,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(
+                        onClick = { val value = input; input = ""; container.agents.send(sessionId, value) },
+                        enabled = input.isNotBlank() && state?.running != true,
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
+                }
             }
         },
     ) { padding ->
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(12.dp),
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding + PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(visibleMessages, key = { it.id }) { message ->

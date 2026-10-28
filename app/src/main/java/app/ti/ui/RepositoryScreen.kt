@@ -7,10 +7,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -58,6 +59,7 @@ import app.ti.AppContainer
 import app.ti.data.ModelEntity
 import app.ti.data.ProviderEntity
 import app.ti.data.RepositoryEntity
+import app.ti.data.RepositorySource
 import app.ti.data.SessionEntity
 import app.ti.git.withGlobalGitToken
 import kotlinx.coroutines.launch
@@ -77,7 +79,8 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
     var showCommit by remember { mutableStateOf(false) }
     var showBranches by remember { mutableStateOf(false) }
     var showNewSession by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
+    var showDeleteActions by remember { mutableStateOf(false) }
+    var confirmDeleteFiles by remember { mutableStateOf(false) }
     var diff by remember { mutableStateOf<String?>(null) }
 
     fun refresh(value: RepositoryEntity) {
@@ -99,7 +102,7 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
             TopAppBar(
                 title = { Text(repo?.name ?: "Repository", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = { IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete repository") } },
+                actions = { IconButton(onClick = { showDeleteActions = true }) { Icon(Icons.Default.Delete, "Repository actions") } },
             )
         },
         floatingActionButton = {
@@ -110,7 +113,18 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
     ) { padding ->
         val value = repo
         if (value == null) return@Scaffold
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 88.dp)) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding + PaddingValues(bottom = 88.dp),
+        ) {
+            item {
+                ListItem(
+                    headlineContent = { Text(value.localPath) },
+                    supportingContent = {
+                        Text(if (value.source == RepositorySource.LOCAL) "Local repository" else "Remote clone")
+                    },
+                )
+            }
             item {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { refresh(value) }, enabled = !busy) { Icon(Icons.Default.Refresh, null); Text("Status") }
@@ -177,10 +191,40 @@ internal fun RepositoryScreen(container: AppContainer, nav: NavController, repos
         }
     }
     diff?.let { DiffDialog(it, onDismiss = { diff = null }) }
-    if (value != null && confirmDelete) {
-        ConfirmDialog("Delete repository and all sessions?", onDismiss = { confirmDelete = false }) {
-            confirmDelete = false
-            container.deleteRepository(value)
+    if (value != null && showDeleteActions) {
+        AlertDialog(
+            onDismissRequest = { showDeleteActions = false },
+            title = { Text("Repository actions") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Removing a repository only removes it from this list.", style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            showDeleteActions = false
+                            container.removeRepository(value)
+                            nav.popBackStack()
+                        },
+                    ) { Text("Remove from list") }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            showDeleteActions = false
+                            confirmDeleteFiles = true
+                        },
+                    ) { Text("Delete local files") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showDeleteActions = false }) { Text("Cancel") } },
+        )
+    }
+    if (value != null && confirmDeleteFiles) {
+        ConfirmDialog(
+            "Delete local files at ${value.localPath}? This cannot be undone.",
+            onDismiss = { confirmDeleteFiles = false },
+        ) {
+            confirmDeleteFiles = false
+            container.deleteRepositoryFiles(value)
             nav.popBackStack()
         }
     }
@@ -207,7 +251,7 @@ private fun BranchDialog(container: AppContainer, repo: RepositoryEntity, onDism
         onDismissRequest = onDismiss,
         title = { Text("Branches") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(name, { name = it }, label = { Text("New branch") }, modifier = Modifier.weight(1f), singleLine = true)
                     IconButton(onClick = { action { container.git.createBranch(repo, name.trim()) } }, enabled = name.isNotBlank() && !busy) { Icon(Icons.Default.Add, "Create") }
@@ -254,7 +298,7 @@ internal fun ModelPickerDialog(models: List<ModelEntity>, providers: List<Provid
                     },
                 )
                 if (filtered.isEmpty()) InfoText("No matching models")
-                LazyColumn(Modifier.fillMaxWidth().height(360.dp)) {
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp).weight(1f, fill = false)) {
                     items(filtered, key = { it.id }) { model ->
                         val provider = providers.firstOrNull { it.id == model.providerId }
                         ListItem(

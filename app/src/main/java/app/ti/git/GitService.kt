@@ -20,6 +20,25 @@ import java.io.File
 import java.net.URI
 
 class GitService {
+    /** Initializes a new repository in an empty directory. */
+    suspend fun init(directory: File) = withContext(Dispatchers.IO) {
+        require(!directory.exists() || directory.listFiles().isNullOrEmpty()) {
+            "Repository directory must be empty"
+        }
+        directory.mkdirs()
+        Git.init().setDirectory(directory).call().close()
+    }
+
+    /** Returns true when [directory] contains a JGit repository. */
+    suspend fun isRepository(directory: File): Boolean = withContext(Dispatchers.IO) {
+        runCatching { Git.open(directory).use { } }.isSuccess
+    }
+
+    /** Initializes a repository in an existing directory without deleting its contents. */
+    suspend fun initialize(directory: File) = withContext(Dispatchers.IO) {
+        Git.init().setDirectory(directory).call().close()
+    }
+
     suspend fun clone(
         url: String,
         directory: File,
@@ -37,9 +56,10 @@ class GitService {
     }
 
     suspend fun configureRemote(repo: RepositoryEntity, proxy: String) = withGit(repo) { git ->
+        val remoteUrl = requireNotNull(repo.remoteUrl) { "Local repositories do not have a remote URL" }
         git.repository.config.apply {
-            setString("remote", "origin", "url", gitProxyUrl(repo.remoteUrl, proxy))
-            setString("remote", "origin", "pushurl", repo.remoteUrl)
+            setString("remote", "origin", "url", gitProxyUrl(remoteUrl, proxy))
+            setString("remote", "origin", "pushurl", remoteUrl)
             save()
         }
     }

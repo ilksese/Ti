@@ -5,8 +5,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -108,8 +110,11 @@ internal fun ProvidersScreen(container: AppContainer, nav: NavController) {
         topBar = { TopAppBar(title = { Text("Providers") }) },
         floatingActionButton = { FloatingActionButton(onClick = { showAdd = true }) { Icon(Icons.Default.Add, "Add provider") } },
     ) { padding ->
-        if (providers.isEmpty()) EmptyState("No providers", Modifier.padding(padding))
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 88.dp)) {
+        if (providers.isEmpty()) EmptyState("No providers", Modifier.padding(padding).consumeWindowInsets(padding))
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding + PaddingValues(bottom = 88.dp),
+        ) {
             items(providers, key = { it.id }) { provider ->
                 ListItem(
                     headlineContent = { Text(provider.name) },
@@ -148,19 +153,25 @@ internal fun ProviderScreen(container: AppContainer, nav: NavController, provide
     val filteredModels = models.filter { it.modelId.contains(modelQuery.trim(), ignoreCase = true) }
 
     Scaffold(
+        modifier = Modifier.imePadding(),
         topBar = {
-            TopAppBar(
-                title = { Text(provider?.name ?: "Provider") },
-                navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = {
-                    IconButton(onClick = { editProvider = true }) { Icon(Icons.Default.Edit, "Edit") }
-                    IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete") }
-                },
-            )
+            ImeAwareTopBar {
+                TopAppBar(
+                    title = { Text(provider?.name ?: "Provider") },
+                    navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                    actions = {
+                        IconButton(onClick = { editProvider = true }) { Icon(Icons.Default.Edit, "Edit") }
+                        IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete") }
+                    },
+                )
+            }
         },
         floatingActionButton = { FloatingActionButton(onClick = { addingModel = true }) { Icon(Icons.Default.Add, "Add model") } },
     ) { padding ->
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 88.dp)) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding + PaddingValues(bottom = 88.dp),
+        ) {
             item {
                 Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(

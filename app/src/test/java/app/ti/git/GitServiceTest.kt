@@ -20,6 +20,29 @@ class GitServiceTest {
     private val git = GitService()
     private val author = "Ti Tester" to "ti@example.com"
 
+    @Test
+    fun initializesNewRepositoryInEmptyDirectory() = run {
+        val target = temp.newFolder("new-repo")
+        target.delete()
+
+        git.init(target)
+
+        assertTrue(File(target, ".git").isDirectory)
+        Git.open(target).use { assertTrue(it.repository.objectDatabase.exists()) }
+    }
+
+    @Test
+    fun initRejectsNonEmptyDirectory() = run {
+        val target = temp.newFolder("non-empty")
+        File(target, "README.md").writeText("content")
+
+        val error = runCatching { git.init(target) }.exceptionOrNull()
+
+        assertTrue("expected non-empty directory to be rejected", error != null)
+        assertTrue(File(target, "README.md").exists())
+        assertFalse(File(target, ".git").exists())
+    }
+
     private fun initRepo() {
         dir = temp.newFolder("repo")
         Git.init().setDirectory(dir).call().close()
@@ -56,6 +79,56 @@ class GitServiceTest {
         assertEquals("https://gitlab.com/acme/project.git", gitProxyUrl("https://gitlab.com/acme/project.git", "gh-proxy"))
         assertEquals("not a url", gitProxyUrl("not a url", "gh-proxy"))
         assertEquals(github, gitProxyUrl(github, ""))
+    }
+
+    @Test
+    fun detectsAndInitializesRepositories() = run {
+        val directory = temp.newFolder("import")
+        assertFalse(git.isRepository(directory))
+
+        git.initialize(directory)
+
+        assertTrue(git.isRepository(directory))
+    }
+
+    @Test
+    fun initializeExistingDirectoryPreservesUserFiles() = run {
+        val directory = temp.newFolder("existing")
+        val source = File(directory, "README.md").apply { writeText("keep me") }
+
+        git.initialize(directory)
+
+        assertTrue(git.isRepository(directory))
+        assertEquals("keep me", source.readText())
+    }
+
+    @Test
+    fun recognizesOnlyTheSelectedRepositoryRoot() = run {
+        val directory = temp.newFolder("parent")
+        git.initialize(directory)
+        val child = File(directory, "child").apply { mkdir() }
+
+        assertTrue(git.isRepository(directory))
+        assertFalse(git.isRepository(child))
+        assertFalse(git.isRepository(File(directory, "missing")))
+    }
+
+    @Test
+    fun clonesLocalOriginWithoutNetworkAndPreservesRemoteConfiguration() = run {
+        initRepo()
+        write("README.md", "local origin\n")
+        commit("origin")
+        val target = File(temp.root, "cloned")
+
+        git.clone(dir.toURI().toString(), target, "", "")
+
+        assertEquals("local origin\n", File(target, "README.md").readText())
+        Git.open(target).use { handle ->
+            assertEquals("origin", handle.log().call().first().fullMessage)
+            val origin = java.net.URI(handle.repository.config.getString("remote", "origin", "url"))
+            assertEquals(dir.canonicalFile, File(origin).canonicalFile)
+            assertTrue(handle.status().call().isClean)
+        }
     }
 
     @Test

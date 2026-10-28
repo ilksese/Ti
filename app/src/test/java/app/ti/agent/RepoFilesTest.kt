@@ -385,6 +385,8 @@ class RepoFilesTest {
 
         assertThrowsMessage("Absolute paths are not allowed") { files.read(repo, outside.absolutePath) }
         assertThrowsMessage("Absolute paths are not allowed") { files.read(repo, "C:\\Windows\\win.ini") }
+        assertThrowsMessage("Absolute paths are not allowed") { files.read(repo, "C:/Windows/win.ini") }
+        assertThrowsMessage("Absolute paths are not allowed") { files.read(repo, "\\\\server\\share\\secret.txt") }
     }
 
     @Test

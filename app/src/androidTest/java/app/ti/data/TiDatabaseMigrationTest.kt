@@ -11,6 +11,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -25,7 +26,7 @@ class TiDatabaseMigrationTest {
     }
 
     @Test
-    fun migratingFromVersion1To5ProducesValidSchemaAndKeepsData() {
+    fun migratingFromVersion1To8ProducesValidSchemaAndKeepsData() {
         context.deleteDatabase(dbName)
         createVersion1Database()
 
@@ -35,6 +36,9 @@ class TiDatabaseMigrationTest {
                 TiDatabase.MIGRATION_2_3,
                 TiDatabase.MIGRATION_3_4,
                 TiDatabase.MIGRATION_4_5,
+                TiDatabase.MIGRATION_5_6,
+                TiDatabase.MIGRATION_6_7,
+                TiDatabase.MIGRATION_7_8,
             )
             .build()
 
@@ -45,6 +49,9 @@ class TiDatabaseMigrationTest {
 
                 assertEquals(listOf("r1"), dao.repositories().map { it.id })
                 assertEquals("ready", dao.repository("r1")!!.status)
+                assertEquals("https://github.com/acme/repo.git", dao.repository("r1")!!.remoteUrl)
+                assertEquals(RepositorySource.REMOTE, dao.repository("r1")!!.source)
+                assertEquals(RepositoryStorageType.APP_PRIVATE, dao.repository("r1")!!.storageType)
                 assertEquals("seamaid", dao.provider("p1")!!.name)
                 assertEquals(200_000, dao.model("m1")!!.contextTokens)
                 assertNull(dao.model("m1")!!.reasoningMode)
@@ -52,6 +59,13 @@ class TiDatabaseMigrationTest {
                 assertFalse(dao.session("s1")!!.titleGenerated)
                 assertEquals("r1", dao.session("s1")!!.repositoryId)
                 assertEquals(listOf("msg1"), dao.messages("s1").map { it.id })
+                assertEquals("hi", dao.messages("s1").single().content)
+
+                // The migration must preserve the dependency chain and keep its
+                // repository -> session -> message cascade valid.
+                dao.deleteRepository(dao.repository("r1")!!)
+                assertNull(dao.session("s1"))
+                assertTrue(dao.messages("s1").isEmpty())
 
                 dao.saveSession(
                     SessionEntity(

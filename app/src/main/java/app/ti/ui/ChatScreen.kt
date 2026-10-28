@@ -1,15 +1,15 @@
 package app.ti.ui
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -60,19 +60,20 @@ internal fun ChatScreen(container: AppContainer, nav: NavController) {
             }) { Icon(Icons.Default.Add, "New chat") }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            if (sessions.isEmpty()) EmptyState("No chats")
-            error?.let { InfoText(it) }
-            LazyColumn(contentPadding = PaddingValues(bottom = 88.dp)) {
-                items(sessions, key = { it.id }) { session ->
-                    ListItem(
-                        headlineContent = { Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(session.status) },
-                        leadingContent = { Icon(Icons.Default.Chat, null) },
-                        modifier = Modifier.clickable { nav.navigate("session/${session.id}") },
-                    )
-                    HorizontalDivider()
-                }
+        if (sessions.isEmpty()) EmptyState("No chats", Modifier.padding(padding).consumeWindowInsets(padding))
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding + PaddingValues(bottom = 88.dp),
+        ) {
+            error?.let { item { InfoText(it) } }
+            items(sessions, key = { it.id }) { session ->
+                ListItem(
+                    headlineContent = { Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text(session.status) },
+                    leadingContent = { Icon(Icons.AutoMirrored.Filled.Chat, null) },
+                    modifier = Modifier.clickable { nav.navigate("session/${session.id}") },
+                )
+                HorizontalDivider()
             }
         }
     }

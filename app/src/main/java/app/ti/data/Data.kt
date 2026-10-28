@@ -17,18 +17,46 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
-@Entity(tableName = "repositories")
+@Entity(tableName = "repositories", indices = [Index(value = ["localPath"], unique = true)])
 data class RepositoryEntity(
     @PrimaryKey val id: String,
     val name: String,
-    val remoteUrl: String,
+    /** Null for repositories that were created/imported locally. */
+    val remoteUrl: String?,
     val localPath: String,
     val username: String,
     val token: String,
     val createdAt: Long,
     val status: String = "ready",
     val progress: String = "",
+    /** Identifies whether this repository was cloned from a remote or created locally. */
+    val source: String = RepositorySource.REMOTE,
+    /** Identifies how the local path is persisted; URI storage is reserved for SAF support. */
+    val storageType: String = RepositoryStorageType.APP_PRIVATE,
 )
+
+/** Persisted repository source values. Keep these stable for Room migrations. */
+object RepositorySource {
+    const val REMOTE = "remote"
+    const val LOCAL = "local"
+}
+
+/** Persisted storage values. `SHARED_URI` is reserved for a future SAF integration. */
+object RepositoryStorageType {
+    const val APP_PRIVATE = "app_private"
+    const val SHARED_URI = "shared_uri"
+}
+
+/** Persisted repository lifecycle values used by background creation and recovery. */
+object RepositoryStatus {
+    const val CREATING = "creating"
+    const val CLONING = "cloning"
+    const val READY = "ready"
+    const val PERMISSION_REQUIRED = "permission_required"
+    const val INVALID = "invalid_repository"
+    const val MISSING = "directory_missing"
+    const val FAILED = "failed"
+}
 
 @Entity(tableName = "providers")
 data class ProviderEntity(
@@ -146,7 +174,7 @@ interface TiDao {
     @Query("SELECT * FROM repositories WHERE id = :id")
     suspend fun repository(id: String): RepositoryEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun saveRepository(value: RepositoryEntity)
 
     @Delete
@@ -275,7 +303,7 @@ interface TiDao {
         MessageEntity::class,
         SettingEntity::class,
     ],
-version = 5,
+    version = 8,
     exportSchema = false,
 )
 abstract class TiDatabase : RoomDatabase() {
@@ -317,21 +345,116 @@ internal val MIGRATION_4_5 = object : Migration(4, 5) {
                         "FOREIGN KEY(`modelId`) REFERENCES `models`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
                 )
                 db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `messages_new` (`id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, " +
+                        "`role` TEXT NOT NULL, `content` TEXT NOT NULL, `name` TEXT, `toolCallId` TEXT, " +
+                        "`toolCallsJson` TEXT, `status` TEXT NOT NULL, `compacted` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
+                        "FOREIGN KEY(`sessionId`) REFERENCES `sessions_new`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                )
+                db.execSQL(
                     "INSERT INTO `sessions_new` (`id`, `repositoryId`, `modelId`, `title`, `titleGenerated`, " +
                         "`status`, `summary`, `summaryThroughAt`, `createdAt`, `updatedAt`) " +
                         "SELECT `id`, `repositoryId`, `modelId`, `title`, `titleGenerated`, `status`, `summary`, " +
                         "`summaryThroughAt`, `createdAt`, `updatedAt` FROM `sessions`",
                 )
+                db.execSQL(
+                    "INSERT INTO `messages_new` (`id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, `toolCallsJson`, " +
+                        "`status`, `compacted`, `createdAt`) SELECT `id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, " +
+                        "`toolCallsJson`, `status`, `compacted`, `createdAt` FROM `messages`",
+                )
+                db.execSQL("DROP TABLE `messages`")
                 db.execSQL("DROP TABLE `sessions`")
                 db.execSQL("ALTER TABLE `sessions_new` RENAME TO `sessions`")
+                db.execSQL("ALTER TABLE `messages_new` RENAME TO `messages`")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_repositoryId` ON `sessions` (`repositoryId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_modelId` ON `sessions` (`modelId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_sessionId` ON `messages` (`sessionId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_toolCallId` ON `messages` (`toolCallId`)")
+            }
+        }
+
+        /** Make the remote optional while retaining every existing repository row. */
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // `sessions` and `messages` both reference repositories (directly or
+                // indirectly). Rebuilding only the parent table would violate SQLite's
+                // foreign-key checks as soon as an existing session is present, so rebuild
+                // the dependency chain together and then restore the original indexes.
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `repositories_new` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`remoteUrl` TEXT, `localPath` TEXT NOT NULL, `username` TEXT NOT NULL, `token` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `progress` TEXT NOT NULL, PRIMARY KEY(`id`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sessions_new` (`id` TEXT NOT NULL, `repositoryId` TEXT, " +
+                        "`modelId` TEXT NOT NULL, `title` TEXT NOT NULL, `titleGenerated` INTEGER NOT NULL, " +
+                        "`status` TEXT NOT NULL, `summary` TEXT, `summaryThroughAt` INTEGER, `createdAt` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
+                        "FOREIGN KEY(`repositoryId`) REFERENCES `repositories`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE, " +
+                        "FOREIGN KEY(`modelId`) REFERENCES `models`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `messages_new` (`id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, " +
+                        "`role` TEXT NOT NULL, `content` TEXT NOT NULL, `name` TEXT, `toolCallId` TEXT, " +
+                        "`toolCallsJson` TEXT, `status` TEXT NOT NULL, `compacted` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`), " +
+                        "FOREIGN KEY(`sessionId`) REFERENCES `sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+                )
+                db.execSQL(
+                    "INSERT INTO `repositories_new` (`id`, `name`, `remoteUrl`, `localPath`, `username`, `token`, `createdAt`, `status`, `progress`) " +
+                        "SELECT `id`, `name`, `remoteUrl`, `localPath`, `username`, `token`, `createdAt`, `status`, `progress` FROM `repositories`",
+                )
+                db.execSQL(
+                    "INSERT INTO `sessions_new` (`id`, `repositoryId`, `modelId`, `title`, `titleGenerated`, `status`, `summary`, " +
+                        "`summaryThroughAt`, `createdAt`, `updatedAt`) SELECT `id`, `repositoryId`, `modelId`, `title`, " +
+                        "`titleGenerated`, `status`, `summary`, `summaryThroughAt`, `createdAt`, `updatedAt` FROM `sessions`",
+                )
+                db.execSQL(
+                    "INSERT INTO `messages_new` (`id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, `toolCallsJson`, " +
+                        "`status`, `compacted`, `createdAt`) SELECT `id`, `sessionId`, `role`, `content`, `name`, `toolCallId`, " +
+                        "`toolCallsJson`, `status`, `compacted`, `createdAt` FROM `messages`",
+                )
+                // New tables reference the old names until the rename completes.
+                // Temporarily disable checks while swapping the dependency chain.
+                db.execSQL("PRAGMA foreign_keys=OFF")
+                db.execSQL("DROP TABLE `messages`")
+                db.execSQL("DROP TABLE `sessions`")
+                db.execSQL("DROP TABLE `repositories`")
+                db.execSQL("ALTER TABLE `repositories_new` RENAME TO `repositories`")
+                db.execSQL("ALTER TABLE `sessions_new` RENAME TO `sessions`")
+                db.execSQL("ALTER TABLE `messages_new` RENAME TO `messages`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_repositoryId` ON `sessions` (`repositoryId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_modelId` ON `sessions` (`modelId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_sessionId` ON `messages` (`sessionId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_toolCallId` ON `messages` (`toolCallId`)")
+                db.execSQL("PRAGMA foreign_keys=ON")
+            }
+        }
+
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE repositories ADD COLUMN source TEXT NOT NULL DEFAULT 'remote'")
+                db.execSQL("ALTER TABLE repositories ADD COLUMN storageType TEXT NOT NULL DEFAULT 'app_private'")
+            }
+        }
+
+        internal val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_repositories_localPath` ON `repositories` (`localPath`)")
             }
         }
 
         fun create(context: Context): TiDatabase =
             Room.databaseBuilder(context, TiDatabase::class.java, "ti.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                    MIGRATION_6_7,
+                    MIGRATION_7_8,
+                )
                 .build()
     }
 }

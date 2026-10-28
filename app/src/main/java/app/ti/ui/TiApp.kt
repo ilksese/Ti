@@ -3,8 +3,13 @@ package app.ti.ui
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
@@ -16,9 +21,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.foundation.layout.padding
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -33,14 +38,17 @@ fun TiApp(container: AppContainer) {
         val entry by nav.currentBackStackEntryAsState()
         val route = entry?.destination?.route
         val roots = listOf(
-            Root("chat", "Chat", Icons.Default.Chat),
+            Root("chat", "Chat", Icons.AutoMirrored.Filled.Chat),
             Root("repos", "Repositories", Icons.Default.Folder),
             Root("providers", "Providers", Icons.Default.Cloud),
             Root("settings", "Settings", Icons.Default.Settings),
         )
+        val showBottomNavigation = roots.any { it.route == route }
         Scaffold(
+            // Screens own system insets; this scaffold only reserves the bottom navigation.
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             bottomBar = {
-                if (route in roots.map { it.route }) {
+                if (showBottomNavigation) {
                     NavigationBar {
                         roots.forEach { root ->
                             NavigationBarItem(
@@ -64,7 +72,7 @@ fun TiApp(container: AppContainer) {
             NavHost(
                 nav,
                 startDestination = "repos",
-                modifier = Modifier.padding(padding),
+                modifier = Modifier.padding(padding).consumeWindowInsets(padding),
                 enterTransition = { fadeIn(fade) },
                 exitTransition = { fadeOut(fade) },
                 popEnterTransition = { fadeIn(fade) },
@@ -85,6 +93,11 @@ fun TiApp(container: AppContainer) {
                 composable("settings") { SettingsScreen(nav) }
                 composable("settings/ai") { AiSettingsScreen(container, nav) }
                 composable("settings/git") { GitSettingsScreen(container, nav) }
+            }
+            if (!showBottomNavigation) {
+                Box(Modifier.fillMaxSize()) {
+                    NavigationBarProtection(Modifier.align(Alignment.BottomCenter))
+                }
             }
         }
     }
